@@ -23,6 +23,9 @@ import dynamic from 'next/dynamic';
 
 const ReactApexChart = dynamic(() => import('react-apexcharts'), { ssr: false });
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const WS_BASE_URL = API_BASE_URL.replace('http', 'ws');
+
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
 export default function Dashboard() {
@@ -58,7 +61,7 @@ export default function Dashboard() {
   const runStrategyBacktest = async () => {
     setIsBacktesting(true);
     try {
-      const response = await fetch('http://localhost:8000/backtest_strategy', {
+      const response = await fetch(`${API_BASE_URL}/backtest_strategy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rules: strategyRules })
@@ -117,7 +120,7 @@ export default function Dashboard() {
 
   const fetchDashboardData = async () => {
     try {
-      const res = await fetch('http://localhost:8000/dashboard');
+      const res = await fetch(`${API_BASE_URL}/dashboard`);
       const json = await res.json();
       if (json.status === "success") {
         setData(json.data);
@@ -131,35 +134,35 @@ export default function Dashboard() {
 
   const fetchExtraFeatures = async () => {
     try {
-      const sigRes = await fetch('http://localhost:8000/signals?days=5');
+      const sigRes = await fetch(`${API_BASE_URL}/signals?days=5`);
       const sigJson = await sigRes.json();
       if (sigJson.status === "success") setSignals(sigJson.data.signals);
 
-      const ldRes = await fetch('http://localhost:8000/models');
+      const ldRes = await fetch(`${API_BASE_URL}/models`);
       const ldJson = await ldRes.json();
       if (ldJson.status === "success") setLeaderboard(ldJson.data.leaderboard);
 
-      const macroRes = await fetch('http://localhost:8000/macro');
+      const macroRes = await fetch(`${API_BASE_URL}/macro`);
       const macroJson = await macroRes.json();
       if (macroJson.status === "success") setMacroData(macroJson.data);
 
-      const intellRes = await fetch('http://localhost:8000/intelligence');
+      const intellRes = await fetch(`${API_BASE_URL}/intelligence`);
       const intellJson = await intellRes.json();
       if (intellJson.status === "success") setIntelligenceData(intellJson.data);
 
-      const wave2Res = await fetch('http://localhost:8000/wave2_data');
+      const wave2Res = await fetch(`${API_BASE_URL}/wave2_data`);
       const wave2Json = await wave2Res.json();
       if (wave2Json.status === "success") setWave2Data(wave2Json.data);
 
-      const newsRes = await fetch('http://localhost:8000/news');
+      const newsRes = await fetch(`${API_BASE_URL}/news`);
       const newsJson = await newsRes.json();
       if (newsJson.status === "success") setNewsData(newsJson.data);
 
-      const agentsRes = await fetch('http://localhost:8000/agents');
+      const agentsRes = await fetch(`${API_BASE_URL}/agents`);
       const agentsJson = await agentsRes.json();
       if (agentsJson.status === "success") setAgentsData(agentsJson.data);
 
-      const rlRes = await fetch('http://localhost:8000/rl_status');
+      const rlRes = await fetch(`${API_BASE_URL}/rl_status`);
       const rlJson = await rlRes.json();
       if (rlJson.status === "success") setRlData(rlJson.data);
     } catch (err) {
@@ -172,7 +175,7 @@ export default function Dashboard() {
     if (!userId) return;
     
     // Fetch Portfolio on login
-    fetch(`http://localhost:8000/portfolio/${userId}`)
+    fetch(`${API_BASE_URL}/portfolio/${userId}`)
       .then(res => res.json())
       .then(json => {
         if (json.status === "success" && json.data && json.data.total_invested !== undefined) {
@@ -188,7 +191,7 @@ export default function Dashboard() {
     if (!userId || !totalInvestedInput || !units) return;
     
     const delayDebounceFn = setTimeout(() => {
-      fetch('http://localhost:8000/portfolio', {
+      fetch(`${API_BASE_URL}/portfolio`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -237,7 +240,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8000/ws/live');
+    const ws = new WebSocket(`${WS_BASE_URL}/ws/live`);
     
     ws.onmessage = (event) => {
       try {
@@ -305,7 +308,7 @@ export default function Dashboard() {
     setIsFetchingCustom(true);
     setCustomForecast(null); // Clear previous result
     try {
-      const res = await fetch('http://localhost:8000/custom-forecast', {
+      const res = await fetch(`${API_BASE_URL}/custom-forecast`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -330,7 +333,7 @@ export default function Dashboard() {
   const handleSimulate = async () => {
     setIsSimulating(true);
     try {
-      const res = await fetch('http://localhost:8000/simulate', {
+      const res = await fetch(`${API_BASE_URL}/simulate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -352,7 +355,7 @@ export default function Dashboard() {
     setIsBacktesting(true);
     setBacktestMetrics(null);
     try {
-      const res = await fetch(`http://localhost:8000/backtest?model_name=${data?.active_model || "LinearRegression"}`);
+      const res = await fetch(`${API_BASE_URL}/backtest?model_name=${data?.active_model || "LinearRegression"}`);
       const json = await res.json();
       if (json.status === "success") {
         setBacktestMetrics(json.data);
@@ -374,7 +377,7 @@ export default function Dashboard() {
     setChatMessages(prev => [...prev, { role: 'ai', text: '...' }]);
 
     try {
-      const res = await fetch('http://localhost:8000/chat', {
+      const res = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMsg })
@@ -506,7 +509,7 @@ const candlestickSeries = [{
         </div>
         <div className="flex flex-col sm:flex-row items-center sm:space-x-4 space-y-4 sm:space-y-0 w-full sm:w-auto mt-4 sm:mt-0">
           <a 
-            href="http://localhost:8000/report"
+            href={`${API_BASE_URL}/report`}
             target="_blank"
             rel="noreferrer"
             className="flex items-center space-x-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-xl text-sm font-semibold transition-all"
