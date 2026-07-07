@@ -1,0 +1,45 @@
+# Virtual environment
+venv/
+
+# Python cache & compiles
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.tox/
+
+# Local databases & logs
+*.db
+*.sqlite
+logs/
+catboost_info/
+
+# Next.js & Frontend Node modules
+node_modules/
+.next/
+out/
+build/
+
+# IDE configs
+.vscode/
+.idea/
+.gemini/
+.agents/
+.DS_Store
+
+# Environments & Private API keys
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Media artifacts & backups
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.backup
+*.tmp
+temp_media/
