@@ -18,7 +18,7 @@ import {
   Calendar, Info, Target, List, PlayCircle, Lock, Download, Globe, ShieldCheck, AlertTriangle, MessageCircle, ArrowUpRight, Briefcase, Users, Cpu, Trophy
 } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
-import { SignInButton, UserButton, useAuth, useUser } from '@clerk/nextjs';
+// Clerk removed - auth disabled for deployment
 import dynamic from 'next/dynamic';
 
 const ReactApexChart = dynamic(() => import('react-apexcharts'), { ssr: false });
@@ -109,8 +109,8 @@ export default function Dashboard() {
   // Tab State
   const [activeTab, setActiveTab] = useState("overview");
 
-  // Clerk Auth
-  const { isLoaded, userId } = useAuth();
+  // Clerk Auth removed - using static userId
+  const userId = null;
 
   // Portfolio States
   const [totalInvestedInput, setTotalInvestedInput] = useState("");
@@ -208,7 +208,7 @@ export default function Dashboard() {
   const fetchAIReasoning = async (signal, price, rsi, macd) => {
     try {
       setAiReasoning("Analyzing...");
-      const res = await fetch('http://localhost:8000/reasoning', {
+      const res = await fetch(`${API_BASE_URL}/reasoning`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ signal, price, rsi, macd })
