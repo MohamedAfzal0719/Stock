@@ -26,8 +26,12 @@ const ReactApexChart = dynamic(() => import('react-apexcharts'), { ssr: false })
 
 const getApiBaseUrl = () => {
   if (typeof window !== 'undefined') {
-    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      return `http://${window.location.hostname}:8000`;
+    const hn = window.location.hostname;
+    // Check if the hostname is a local IP address (e.g., 192.168.x.x, 10.x.x.x, 172.x.x.x)
+    const isLocalIp = /^(192\.168\.|10\.|172\.)/.test(hn);
+    
+    if (isLocalIp) {
+      return `http://${hn}:8000`;
     }
   }
   return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
