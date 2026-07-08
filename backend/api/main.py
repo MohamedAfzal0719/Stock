@@ -695,21 +695,59 @@ def get_ai_reasoning(req: ReasoningRequest):
 
 class ChatRequest(BaseModel):
     message: str
+from fastapi import Request
 
 @app.post("/chat", response_model=ResponseModel)
-def chat_with_portfolio(req: ChatRequest):
+def chat_with_portfolio(req: ChatRequest, request: Request):
     """
-    RAG Chatbot using Groq
+    RAG Chatbot using Groq with optional Portfolio context
     """
     try:
         engine = InferenceEngine()
         regime = engine.detect_market_regime()
         live_price = get_live_price()
         
+        # Try to retrieve user portfolio context
+        user_portfolio_context = "The user is not logged in or has not entered their holdings."
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            try:
+                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                username = payload.get("sub")
+                if username:
+                    conn = psycopg2.connect(DATABASE_URL)
+                    c = conn.cursor()
+                    c.execute("SELECT user_id FROM users WHERE username=%s", (username,))
+                    user_row = c.fetchone()
+                    if user_row:
+                        user_id = user_row[0]
+                        c.execute("SELECT total_invested, units FROM portfolios WHERE user_id=%s", (user_id,))
+                        port_row = c.fetchone()
+                        if port_row:
+                            total_invested, units = port_row
+                            current_val = live_price * units
+                            p_l = current_val - total_invested
+                            p_l_pct = (p_l / total_invested * 100) if total_invested > 0 else 0
+                            user_portfolio_context = (
+                                f"The user is logged in as {username}. "
+                                f"Holdings: Total Invested: ₹{total_invested:.2f}, "
+                                f"Units Owned: {units}, Current Value: ₹{current_val:.2f}, "
+                                f"Profit/Loss: ₹{p_l:.2f} ({p_l_pct:.2f}%)."
+                            )
+                    conn.close()
+            except Exception as auth_err:
+                logger.warning(f"Chat auth failed: {auth_err}")
+
         system_prompt = f"""
         You are an expert AI trading assistant for a GoldBeES investment portfolio.
         Current Market Regime: {regime['regime']}. Live Price: ₹{live_price}. RSI: {regime['rsi']}.
-        Be extremely concise, helpful, and professional. Do not use markdown.
+        
+        User Portfolio Context:
+        {user_portfolio_context}
+        
+        Answer questions about the market or the user's holdings accurately using the details provided above. 
+        Be extremely concise, helpful, and professional. Do not use markdown format.
         """
         
         response = groq_client.chat.completions.create(

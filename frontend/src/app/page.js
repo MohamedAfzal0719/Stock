@@ -572,10 +572,16 @@ export default function Dashboard() {
     setChatInput('');
     setChatMessages(prev => [...prev, { role: 'ai', text: '...' }]);
 
+    const token = localStorage.getItem('access_token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     try {
       const res = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers,
         body: JSON.stringify({ message: userMsg })
       });
       const json = await res.json();
