@@ -3,12 +3,23 @@ matplotlib.use('Agg')
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from py_vapid import Vapid
+from py_vapid.utils import b64urlencode
+from cryptography.hazmat.primitives import serialization
+from pywebpush import webpush, WebPushException
+import json
 import os
 import pandas as pd
 from typing import Dict, Any, List
 
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import os
+import urllib.parse
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from groq import Groq
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
@@ -25,23 +36,111 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Set up SQLite database
-DB_PATH = os.path.join(os.path.dirname(__file__), "portfolio.db")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import bcrypt
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+from fastapi import Depends, status
+
+SECRET_KEY = "your-very-secret-key-for-jwt"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+# VAPID Keys Setup for Web Push Notifications
+vapid_key_file = os.path.join(os.path.dirname(__file__), "vapid_private.pem")
+vapid = Vapid()
+if not os.path.exists(vapid_key_file):
+    vapid.generate_keys()
+    vapid.save_key(vapid_key_file)
+else:
+    vapid = Vapid.from_file(vapid_key_file)
+
+# Extract raw public key bytes and encode to base64url for browser compatibility
+raw_pub = vapid.public_key.public_bytes(
+    serialization.Encoding.X962,
+    serialization.PublicFormat.UncompressedPoint
+)
+VAPID_PUBLIC_KEY = b64urlencode(raw_pub)
+VAPID_PRIVATE_KEY = vapid_key_file
+VAPID_CLAIMS = {
+    "sub": "mailto:admin@goldbees.com"
+}
+
+def verify_password(plain_password, hashed_password):
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+def get_password_hash(password):
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE,
+            hashed_password TEXT
+        )
+    ''')
+    c.execute('''
         CREATE TABLE IF NOT EXISTS portfolios (
-            clerk_user_id TEXT PRIMARY KEY,
+            user_id INTEGER PRIMARY KEY,
             total_invested REAL,
             units REAL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id)
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            subscription_id SERIAL PRIMARY KEY,
+            user_id INTEGER,
+            endpoint TEXT UNIQUE,
+            p256dh TEXT,
+            auth TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(user_id)
         )
     ''')
     conn.commit()
     conn.close()
 
 init_db()
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    conn = psycopg2.connect(DATABASE_URL)
+    c = conn.cursor()
+    c.execute("SELECT user_id, username FROM users WHERE username=%s", (username,))
+    row = c.fetchone()
+    conn.close()
+    if row is None:
+        raise credentials_exception
+    return {"user_id": row[0], "username": row[1]}
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -147,6 +246,64 @@ def get_forecasts(model_name: str = "LinearRegression"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+LAST_NOTIFIED_SIGNAL_DATE = None
+
+def send_push_notifications(title: str, body: str):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        c = conn.cursor()
+        c.execute("SELECT endpoint, p256dh, auth FROM push_subscriptions")
+        rows = c.fetchall()
+        conn.close()
+        
+        payload = json.dumps({
+            "title": title,
+            "body": body,
+            "icon": "/icon.png",
+            "badge": "/badge.png",
+            "url": "/"
+        })
+        
+        for row in rows:
+            endpoint, p256dh, auth = row
+            subscription_info = {
+                "endpoint": endpoint,
+                "keys": {
+                    "p256dh": p256dh,
+                    "auth": auth
+                }
+            }
+            try:
+                webpush(
+                    subscription_info=subscription_info,
+                    data=payload,
+                    vapid_private_key=VAPID_PRIVATE_KEY,
+                    vapid_claims=VAPID_CLAIMS
+                )
+            except WebPushException as ex:
+                logger.warning(f"Failed to send push: {ex}")
+    except Exception as e:
+        logger.error(f"Error in send_push_notifications: {e}")
+
+def check_and_trigger_push(signals):
+    global LAST_NOTIFIED_SIGNAL_DATE
+    if signals.empty:
+        return
+    latest = signals.iloc[-1]
+    latest_date = str(latest.name) if hasattr(latest, 'name') else str(latest.get('Date', ''))
+    latest_action = latest.get('Action', 'HOLD')
+    
+    if LAST_NOTIFIED_SIGNAL_DATE != latest_date:
+        if latest_action in ['BUY', 'SELL']:
+            # Run in a background thread to prevent API block
+            import threading
+            t = threading.Thread(
+                target=send_push_notifications, 
+                args=(f"GoldBeES AI alert: {latest_action}", f"Strategy updated to {latest_action} on {latest_date}.")
+            )
+            t.start()
+        LAST_NOTIFIED_SIGNAL_DATE = latest_date
+
 @app.get("/signals", response_model=ResponseModel)
 def get_historical_signals(model_name: str = "LinearRegression", days: int = 30):
     """
@@ -158,6 +315,9 @@ def get_historical_signals(model_name: str = "LinearRegression", days: int = 30)
         
         if signals.empty:
             raise HTTPException(status_code=400, detail="No data available.")
+            
+        # Trigger background web push checks
+        check_and_trigger_push(signals)
             
         history = signals.tail(days).reset_index().to_dict(orient="records")
         # Convert timestamp to string for JSON serialization
@@ -247,16 +407,6 @@ def get_live_price(ticker: str = "GOLDBEES.NS") -> float:
     except Exception as e:
         logger.warning(f"Google Finance fetch failed: {e}")
         
-    try:
-        # Fallback to Yahoo fast_info
-        t = yf.Ticker(ticker)
-        if hasattr(t, 'fast_info') and 'last_price' in t.fast_info:
-            price = t.fast_info['last_price']
-            if price is not None and price > 0:
-                return float(price)
-    except Exception as e:
-        logger.warning(f"Yahoo Finance fallback failed: {e}")
-        
     return None
 
 @app.post("/custom-forecast", response_model=ResponseModel)
@@ -281,13 +431,24 @@ def get_macro_data():
     Fetch live macro-economic data (USD/INR and Global Gold Futures)
     """
     try:
+        import requests
+        import re
+
         # USD to INR Exchange Rate
-        usd_inr_ticker = yf.Ticker("USDINR=X")
-        usd_inr = usd_inr_ticker.fast_info['last_price'] if hasattr(usd_inr_ticker, 'fast_info') and 'last_price' in usd_inr_ticker.fast_info else 83.50
+        try:
+            res_usd = requests.get('https://www.google.com/finance/quote/USD-INR')
+            match_usd = re.search(r'data-last-price="([0-9\.]+)"', res_usd.text)
+            usd_inr = float(match_usd.group(1)) if match_usd else 83.50
+        except:
+            usd_inr = 83.50
         
         # Global Gold Futures (USD per Ounce)
-        gold_futures = yf.Ticker("GC=F")
-        gold_usd = gold_futures.fast_info['last_price'] if hasattr(gold_futures, 'fast_info') and 'last_price' in gold_futures.fast_info else 2350.00
+        try:
+            res_gold = requests.get('https://www.google.com/finance/quote/GCW00:COMEX')
+            match_gold = re.search(r'data-last-price="([0-9\.]+)"', res_gold.text)
+            gold_usd = float(match_gold.group(1)) if match_gold else 2350.00
+        except:
+            gold_usd = 2350.00
         
         data = {
             "USD_INR": float(usd_inr),
@@ -298,24 +459,58 @@ def get_macro_data():
         logger.warning(f"Failed to fetch macro data: {e}")
         return {"status": "success", "message": "Macro data (fallback)", "data": {"USD_INR": 83.50, "Gold_Futures_USD": 2350.00}}
 
+# --- API Endpoints ---
+
+class UserRegister(BaseModel):
+    username: str
+    password: str
+
+@app.post("/register", response_model=ResponseModel)
+def register(user: UserRegister):
+    conn = psycopg2.connect(DATABASE_URL)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO users (username, hashed_password) VALUES (%s, %s)", (user.username, get_password_hash(user.password)))
+        conn.commit()
+    except psycopg2.IntegrityError:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Username already registered")
+    conn.close()
+    return {"status": "success", "message": "User registered successfully"}
+
+@app.post("/login")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    conn = psycopg2.connect(DATABASE_URL)
+    c = conn.cursor()
+    c.execute("SELECT user_id, username, hashed_password FROM users WHERE username=%s", (form_data.username,))
+    row = c.fetchone()
+    conn.close()
+    if not row or not verify_password(form_data.password, row[2]):
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": row[1]}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer", "user_id": row[0]}
+
 class PortfolioRequest(BaseModel):
-    clerk_user_id: str
     total_invested: float
     units: float
 
 @app.post("/portfolio", response_model=ResponseModel)
-def save_portfolio(req: PortfolioRequest):
+def save_portfolio(req: PortfolioRequest, current_user: dict = Depends(get_current_user)):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = psycopg2.connect(DATABASE_URL)
         c = conn.cursor()
         c.execute('''
-            INSERT INTO portfolios (clerk_user_id, total_invested, units, updated_at)
+            INSERT INTO portfolios (user_id, total_invested, units, updated_at)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(clerk_user_id) DO UPDATE SET
+            ON CONFLICT(user_id) DO UPDATE SET
                 total_invested=excluded.total_invested,
                 units=excluded.units,
                 updated_at=CURRENT_TIMESTAMP
-        ''', (req.clerk_user_id, req.total_invested, req.units))
+        ''', (current_user["user_id"], req.total_invested, req.units))
         conn.commit()
         conn.close()
         return {"status": "success", "message": "Portfolio saved"}
@@ -323,12 +518,12 @@ def save_portfolio(req: PortfolioRequest):
         logger.error(f"DB Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to save portfolio")
 
-@app.get("/portfolio/{user_id}", response_model=ResponseModel)
-def get_portfolio(user_id: str):
+@app.get("/portfolio", response_model=ResponseModel)
+def get_portfolio(current_user: dict = Depends(get_current_user)):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = psycopg2.connect(DATABASE_URL)
         c = conn.cursor()
-        c.execute("SELECT total_invested, units FROM portfolios WHERE clerk_user_id=?", (user_id,))
+        c.execute("SELECT total_invested, units FROM portfolios WHERE user_id=%s", (current_user["user_id"],))
         row = c.fetchone()
         conn.close()
         
@@ -337,6 +532,31 @@ def get_portfolio(user_id: str):
         return {"status": "success", "message": "No portfolio found", "data": {}}
     except Exception as e:
         raise HTTPException(status_code=500, detail="Failed to fetch portfolio")
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str
+    keys: Dict[str, str]
+
+@app.post("/subscribe", response_model=ResponseModel)
+def subscribe_push(req: PushSubscriptionRequest, current_user: dict = Depends(get_current_user)):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth
+        ''', (current_user["user_id"], req.endpoint, req.keys.get("p256dh"), req.keys.get("auth")))
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": "Subscription registered", "data": {}}
+    except Exception as e:
+        logger.error(f"Subscription Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to register subscription")
+
+@app.get("/vapid-public-key", response_model=ResponseModel)
+def get_vapid_public_key():
+    return {"status": "success", "message": "VAPID key retrieved", "data": {"public_key": VAPID_PUBLIC_KEY}}
 
 @app.get("/dashboard", response_model=ResponseModel)
 def get_dashboard_data(model_name: str = "LinearRegression"):
@@ -356,7 +576,7 @@ def get_dashboard_data(model_name: str = "LinearRegression"):
         latest_price = live_price if live_price is not None else forecast.get("Current_Price", 0)
         forecast["Current_Price"] = latest_price
         
-        ohlc = engine.get_historical_ohlc(30)
+        ohlc = engine.get_historical_ohlc(1000)
         
         data = {
             "current_price": latest_price,

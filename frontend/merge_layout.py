@@ -1,723 +1,42 @@
-"use client";
-
-import { motion, AnimatePresence } from 'framer-motion';
-
-import { useEffect, useState, useRef } from 'react';
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-  Filler,
-} from 'chart.js';
-import { Line } from 'react-chartjs-2';
-import { 
-  TrendingUp, TrendingDown, DollarSign, Activity, AlertCircle, RefreshCw, BarChart2, Zap, 
-  Calendar, Info, Target, List, PlayCircle, Lock, Download, Globe, ShieldCheck, AlertTriangle, MessageCircle, ArrowUpRight, Briefcase, Users, Cpu, Trophy
-} from 'lucide-react';
-import toast, { Toaster } from 'react-hot-toast';
-import dynamic from 'next/dynamic';
-
-const ReactApexChart = dynamic(() => import('react-apexcharts'), { ssr: false });
-
-const getApiBaseUrl = () => {
-  if (typeof window !== 'undefined') {
-    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      return `http://${window.location.hostname}:8000`;
-    }
-  }
-  return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-};
-
-const API_BASE_URL = getApiBaseUrl();
-const WS_BASE_URL = API_BASE_URL.replace('http', 'ws');
-
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
-
-export default function Dashboard() {
-  // Existing States
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  
-  // Custom Forecast States
-  const [customDate, setCustomDate] = useState("");
-  const [customForecast, setCustomForecast] = useState(null);
-  const [isFetchingCustom, setIsFetchingCustom] = useState(false);
-
-  const [strategyRules, setStrategyRules] = useState([{ indicator: 'RSI', operator: '<', value: 30 }]);
-  const [backtestResult, setBacktestResult] = useState(null);
-  const [isBacktesting, setIsBacktesting] = useState(false);
-
-  const handleAddRule = () => {
-    setStrategyRules([...strategyRules, { indicator: 'RSI', operator: '<', value: 30 }]);
-  };
-
-  const handleUpdateRule = (index, field, value) => {
-    const newRules = [...strategyRules];
-    newRules[index][field] = value;
-    setStrategyRules(newRules);
-  };
-
-  const handleRemoveRule = (index) => {
-    const newRules = [...strategyRules];
-    newRules.splice(index, 1);
-    setStrategyRules(newRules);
-  };
-
-  const runStrategyBacktest = async () => {
-    setIsBacktesting(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/backtest_strategy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: strategyRules })
-      });
-      const res = await response.json();
-      if (res.status === 'success') {
-        setBacktestResult(res.data);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-    setIsBacktesting(false);
-  };
-
-  
-  // New Feature States
-  const [signals, setSignals] = useState([]);
-  const [leaderboard, setLeaderboard] = useState([]);
-  const [backtestMetrics, setBacktestMetrics] = useState(null);
-
-  const [macroData, setMacroData] = useState(null);
-  const [intelligenceData, setIntelligenceData] = useState(null);
-  
-  // Wave 2 States
-  const [wave2Data, setWave2Data] = useState(null);
-  const [simVariable, setSimVariable] = useState('USD_INR');
-  const [simChange, setSimChange] = useState(0);
-  const [simResult, setSimResult] = useState(null);
-  const [isSimulating, setIsSimulating] = useState(false);
-  
-  const [aiReasoning, setAiReasoning] = useState(null);
-  const [isChatOpen, setIsChatOpen] = useState(false);
-  const [chatMessages, setChatMessages] = useState([{ role: 'ai', text: 'Hello! I am your AI Trading Assistant. How can I help you today?' }]);
-  const [chatInput, setChatInput] = useState('');
-  
-  // Wave 4 States
-  const [newsData, setNewsData] = useState(null);
-
-  // Wave 5 States
-  const [agentsData, setAgentsData] = useState(null);
-
-  // Wave 6 States
-  const [rlData, setRlData] = useState(null);
-
-  // Tab State
-  const [activeTab, setActiveTab] = useState("overview");
-  const [chartTimeframe, setChartTimeframe] = useState("1M");
-
-  // Custom JWT Auth State
-  const [userId, setUserId] = useState(null);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authMode, setAuthMode] = useState('login');
-  const [authUsername, setAuthUsername] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-
-  useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    const uid = localStorage.getItem('user_id');
-    if (token && uid) {
-      setUserId(uid);
-    }
-    setIsLoaded(true);
-  }, []);
-
-  // Portfolio States
-  const [totalInvestedInput, setTotalInvestedInput] = useState("");
-  const [units, setUnits] = useState("");
-
-  const chartRef = useRef(null);
-
-  const fetchDashboardData = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/dashboard`);
-      const json = await res.json();
-      if (json.status === "success") {
-        setData(json.data);
-      }
-    } catch (err) {
-      console.error("Failed to fetch dashboard data", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchExtraFeatures = async () => {
-    try {
-      const sigRes = await fetch(`${API_BASE_URL}/signals?days=5`);
-      const sigJson = await sigRes.json();
-      if (sigJson.status === "success") setSignals(sigJson.data.signals);
-
-      const ldRes = await fetch(`${API_BASE_URL}/models`);
-      const ldJson = await ldRes.json();
-      if (ldJson.status === "success") setLeaderboard(ldJson.data.leaderboard);
-
-      const macroRes = await fetch(`${API_BASE_URL}/macro`);
-      const macroJson = await macroRes.json();
-      if (macroJson.status === "success") setMacroData(macroJson.data);
-
-      const intellRes = await fetch(`${API_BASE_URL}/intelligence`);
-      const intellJson = await intellRes.json();
-      if (intellJson.status === "success") setIntelligenceData(intellJson.data);
-
-      const wave2Res = await fetch(`${API_BASE_URL}/wave2_data`);
-      const wave2Json = await wave2Res.json();
-      if (wave2Json.status === "success") setWave2Data(wave2Json.data);
-
-      const newsRes = await fetch(`${API_BASE_URL}/news`);
-      const newsJson = await newsRes.json();
-      if (newsJson.status === "success") setNewsData(newsJson.data);
-
-      const agentsRes = await fetch(`${API_BASE_URL}/agents`);
-      const agentsJson = await agentsRes.json();
-      if (agentsJson.status === "success") setAgentsData(agentsJson.data);
-
-      const rlRes = await fetch(`${API_BASE_URL}/rl_status`);
-      const rlJson = await rlRes.json();
-      if (rlJson.status === "success") setRlData(rlJson.data);
-    } catch (err) {
-      console.error("Failed to fetch extra features", err);
-    }
-  };
-
-  // Portfolio Database Syncing
-  const setupPushNotifications = async () => {
-    if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
-      console.log('Push notifications are not supported in this browser.');
-      return;
-    }
-
-    try {
-      // 1. Register service worker
-      const registration = await navigator.serviceWorker.register('/sw.js');
-
-      // 2. Fetch VAPID Public Key from backend
-      const res = await fetch(`${API_BASE_URL}/vapid-public-key`);
-      const json = await res.json();
-      if (json.status !== 'success' || !json.data.public_key) {
-        console.error('Failed to get VAPID public key.');
-        return;
-      }
-      const vapidPublicKey = json.data.public_key;
-
-      // Convert VAPID key from base64url to Uint8Array
-      const urlBase64ToUint8Array = (base64String) => {
-        const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-        const base64 = (base64String + padding)
-          .replace(/\-/g, '+')
-          .replace(/_/g, '/');
-        const rawData = window.atob(base64);
-        const outputArray = new Uint8Array(rawData.length);
-        for (let i = 0; i < rawData.length; ++i) {
-          outputArray[i] = rawData.charCodeAt(i);
-        }
-        return outputArray;
-      };
-
-      const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
-
-      // 3. Request permissions & subscribe
-      let subscription = await registration.pushManager.getSubscription();
-      if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: convertedVapidKey
-        });
-      }
-
-      // 4. Send subscription to backend
-      const token = localStorage.getItem('access_token');
-      if (token) {
-        await fetch(`${API_BASE_URL}/subscribe`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(subscription)
-        });
-        console.log('Successfully subscribed to background Web Push notifications!');
-      }
-    } catch (err) {
-      console.warn('Error setting up Web Push notifications:', err);
-    }
-  };
-
-  useEffect(() => {
-    if (!userId) return;
-    
-    setupPushNotifications();
-    
-    // Fetch Portfolio on login
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
-
-    fetch(`${API_BASE_URL}/portfolio`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    })
-      .then(async (res) => {
-        if (res.status === 401) {
-          // Token is invalid/expired (e.g. database reset)
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('user_id');
-          setUserId(null);
-          toast.error("Session expired. Please log in again.");
-          return null;
-        }
-        return res.json();
-      })
-      .then(data => {
-        if (data && data.status === "success" && data.data.total_invested !== undefined) {
-          setTotalInvestedInput(data.data.total_invested.toString());
-          setUnits(data.data.units.toString());
-        }
-      })
-      .catch(err => console.error("Failed to fetch portfolio", err));
-  }, [userId]);
-
-  useEffect(() => {
-    // Auto-save portfolio when changed, debounced
-    if (!userId || !totalInvestedInput || !units) return;
-    
-    const delayDebounceFn = setTimeout(() => {
-      const token = localStorage.getItem('access_token');
-      if (!token) return;
-
-      fetch(`${API_BASE_URL}/portfolio`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          total_invested: parseFloat(totalInvestedInput) || 0,
-          units: parseFloat(units) || 0
-        })
-      }).catch(err => console.error("Failed to save portfolio", err));
-    }, 1000);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [totalInvestedInput, units, userId]);
-
-  const handleSavePortfolio = async (e) => {
-    if (e) e.preventDefault();
-    if (!userId) {
-      toast.error("Please sign in to save your portfolio");
-      return;
-    }
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/portfolio`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          total_invested: parseFloat(totalInvestedInput) || 0,
-          units: parseFloat(units) || 0
-        })
-      });
-      if (res.ok) {
-        toast.success("Portfolio saved successfully!");
-      } else {
-        toast.error("Failed to save portfolio");
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error("Error saving portfolio");
-    }
-  };
-
-  const handleAuthSubmit = async (e) => {
-    e.preventDefault();
-    const endpoint = authMode === 'login' ? '/login' : '/register';
-    
-    try {
-      let body, headers;
-      if (authMode === 'login') {
-        body = new URLSearchParams();
-        body.append('username', authUsername);
-        body.append('password', authPassword);
-        headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
-      } else {
-        body = JSON.stringify({ username: authUsername, password: authPassword });
-        headers = { 'Content-Type': 'application/json' };
-      }
-
-      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
-        method: 'POST',
-        headers,
-        body
-      });
-      const data = await res.json();
-      
-      if (res.ok) {
-        if (authMode === 'login') {
-          localStorage.setItem('access_token', data.access_token);
-          localStorage.setItem('user_id', data.user_id);
-          setUserId(data.user_id);
-          setShowAuthModal(false);
-          toast.success("Logged in successfully!");
-        } else {
-          toast.success("Registered! You can now log in.");
-          setAuthMode('login');
-        }
-      } else {
-        toast.error(data.detail || "Authentication failed");
-      }
-    } catch (err) {
-      toast.error("Network error");
-    }
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('user_id');
-    setUserId(null);
-    setTotalInvestedInput("");
-    setUnits("");
-    toast.success("Logged out");
-  };
-
-  const fetchAIReasoning = async (signal, price, rsi, macd) => {
-    try {
-      setAiReasoning("Analyzing...");
-      const res = await fetch(`${API_BASE_URL}/reasoning`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signal, price, rsi, macd })
-      });
-      if (!res.ok) {
-        setAiReasoning(`API Error: ${res.status} ${res.statusText}`);
-        return;
-      }
-      const json = await res.json();
-      if (json.status === "success") {
-        setAiReasoning(json.data.reasoning);
-      } else {
-        setAiReasoning(json.message || "Failed to generate reasoning.");
-      }
-    } catch (e) {
-      setAiReasoning(`Error: ${e.message}`);
-    }
-  };
-
-  useEffect(() => {
-    fetchDashboardData();
-    fetchExtraFeatures();
-
-    const interval = setInterval(() => {
-      fetchDashboardData();
-    }, 60000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    const ws = new WebSocket(`${WS_BASE_URL}/ws/live`);
-    
-    ws.onmessage = (event) => {
-      try {
-        const json = JSON.parse(event.data);
-        if (json.status === 'success') {
-          setData(prev => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              current_price: json.current_price,
-              forecast: json.forecast
-            };
-          });
-        }
-      } catch (err) {
-        console.error("Error parsing websocket data", err);
-      }
-    };
-
-    ws.onerror = (err) => {
-      console.error("WebSocket error", err);
-    };
-
-    ws.onclose = () => {
-      console.log("WebSocket connection closed");
-    };
-
-    return () => {
-      ws.close();
-    };
-  }, []);
-
-  // Toast Notification Effect
-  const latestSignal = signals.length > 0 ? signals[signals.length - 1] : null;
-  const previousSignalRef = useRef(null);
-
-  useEffect(() => {
-    if (latestSignal && data && intelligenceData) {
-      if (!aiReasoning) {
-        fetchAIReasoning(
-          latestSignal.Action, 
-          data.current_price, 
-          intelligenceData.market_regime?.rsi || 50, 
-          0 // simplified MACD
-        );
-      }
-    }
-  }, [latestSignal, data, intelligenceData]);
-
-  useEffect(() => {
-    if (latestSignal && previousSignalRef.current !== latestSignal.Action) {
-      if (latestSignal.Action === 'BUY') {
-        toast.success('📈 BUY ALERT: AI detects upward momentum!', { duration: 5000 });
-      } else if (latestSignal.Action === 'SELL') {
-        toast.error('🚨 URGENT: Market dropping! AI predicts a fall.', { duration: 6000 });
-      } else if (previousSignalRef.current !== null) {
-        toast('Market stabilized. AI suggests HOLD.', { icon: '⚖️', duration: 4000 });
-      }
-      previousSignalRef.current = latestSignal.Action;
-    }
-  }, [latestSignal]);
-
-  const handleCustomForecast = async () => {
-    if (!customDate) return;
-    setIsFetchingCustom(true);
-    setCustomForecast(null); // Clear previous result
-    try {
-      const res = await fetch(`${API_BASE_URL}/custom-forecast`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          target_date: customDate,
-          model_name: data?.active_model || "LinearRegression"
-        }),
-      });
-      const json = await res.json();
-      if (res.ok && json.status === "success") {
-        setCustomForecast(json.data);
-      } else {
-        alert(json.detail || "Failed to generate forecast.");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Error connecting to server.");
-    } finally {
-      setIsFetchingCustom(false);
-    }
-  };
-
-  const handleSimulate = async () => {
-    setIsSimulating(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/simulate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          variable: simVariable, 
-          change_pct: parseFloat(simChange), 
-          model_name: data?.active_model || 'LinearRegression' 
-        })
-      });
-      const json = await res.json();
-      if (json.status === "success") setSimResult(json.data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsSimulating(false);
-    }
-  };
-
-  const handleRunBacktest = async () => {
-    setIsBacktesting(true);
-    setBacktestMetrics(null);
-    try {
-      const res = await fetch(`${API_BASE_URL}/backtest?model_name=${data?.active_model || "LinearRegression"}`);
-      const json = await res.json();
-      if (json.status === "success") {
-        setBacktestMetrics(json.data);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsBacktesting(false);
-    }
-  };
-
-
-
-  const handleSendChat = async () => {
-    if (!chatInput.trim()) return;
-    const userMsg = chatInput;
-    setChatMessages(prev => [...prev, { role: 'user', text: userMsg }]);
-    setChatInput('');
-    setChatMessages(prev => [...prev, { role: 'ai', text: '...' }]);
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg })
-      });
-      const json = await res.json();
-      if (json.status === "success") {
-        setChatMessages(prev => {
-          const newMsgs = [...prev];
-          newMsgs[newMsgs.length - 1] = { role: 'ai', text: json.data.reply };
-          return newMsgs;
-        });
-      }
-    } catch (e) {
-      setChatMessages(prev => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1] = { role: 'ai', text: "Sorry, I'm offline." };
-        return newMsgs;
-      });
-    }
-  };
-
-  if (loading && !data) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-[#E8EFE9] text-gray-900">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#5A67D8]"></div>
-      </div>
-    );
-  }
-
-  if (!data) return <div className="p-10 text-gray-900 bg-[#E8EFE9] h-screen">Failed to load dashboard. Ensure FastAPI is running on port 8000.</div>;
-
-  const { current_price, forecast, risk_metrics, active_model, ohlc } = data;
-
-  // Chart Setup
-  const candlestickOptions = {
-    chart: { type: 'candlestick', background: 'transparent', toolbar: { show: false } },
-    theme: { mode: 'light' },
-    plotOptions: {
-      candlestick: { colors: { upward: '#10B981', downward: '#EF4444' } }
-    },
-    xaxis: { type: 'datetime', labels: { style: { colors: '#6B7280' } } },
-    yaxis: {
-      tooltip: { enabled: true },
-      labels: { style: { colors: '#6B7280' }, formatter: (value) => "₹" + value.toFixed(2) }
-    },
-    grid: { borderColor: '#E5E7EB' },
-  };
-
-  
-  const getFilteredOhlc = () => {
-    if (!ohlc || ohlc.length === 0) return [];
-    
-    // Parse date strings to timestamps for sorting/filtering
-    const sorted = [...ohlc].map(item => ({
-      ...item,
-      timestamp: new Date(item.x).getTime()
-    })).sort((a, b) => a.timestamp - b.timestamp);
-    
-    const latestDate = sorted[sorted.length - 1].timestamp;
-    
-    let cutoff = 0;
-    const day = 24 * 60 * 60 * 1000;
-    
-    switch(chartTimeframe) {
-      case '1D': cutoff = latestDate - 1 * day; break;
-      case '5D': cutoff = latestDate - 5 * day; break;
-      case '1M': cutoff = latestDate - 30 * day; break;
-      case '6M': cutoff = latestDate - 180 * day; break;
-      case 'YTD': 
-        const yearStart = new Date(new Date(latestDate).getFullYear(), 0, 1).getTime();
-        cutoff = yearStart;
-        break;
-      case '1Y': cutoff = latestDate - 365 * day; break;
-      case '5Y': cutoff = latestDate - 5 * 365 * day; break;
-      case 'MAX': cutoff = 0; break;
-      default: cutoff = latestDate - 30 * day;
-    }
-    
-    return sorted.filter(item => item.timestamp >= cutoff);
-  };
-
-  const lineSeriesData = [{
-    name: 'Close Price',
-    data: getFilteredOhlc().map(item => ({ x: item.timestamp, y: item.y[3] }))
-  }];
-
-  const lineOptions = {
-    chart: { type: 'area', background: 'transparent', toolbar: { show: false }, animations: { enabled: false } },
-    theme: { mode: 'light' },
-    colors: ['#5A67D8'], // Indigo color
-    fill: {
-      type: 'gradient',
-      gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05, stops: [0, 100] }
-    },
-    stroke: { curve: 'smooth', width: 2 },
-    xaxis: { type: 'datetime', labels: { style: { colors: '#6B7280' } }, axisBorder: { show: false }, axisTicks: { show: false } },
-    yaxis: {
-      labels: { formatter: (value) => '₹' + value.toFixed(2), style: { colors: '#6B7280' } }
-    },
-    grid: { borderColor: '#E5E7EB', strokeDashArray: 4 },
-    dataLabels: { enabled: false },
-    tooltip: { theme: 'light', x: { format: 'dd MMM yyyy' } }
-  };
-
-const candlestickSeries = [{
-    name: 'candle',
-    data: ohlc || []
-  }];
-
-  const renderSignalBadge = (sig) => {
-    if (sig === 'BUY') return <span className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded-md text-xs font-bold border border-[#5A67D8]/50">BUY</span>;
-    if (sig === 'SELL') return <span className="px-2 py-1 bg-rose-50 text-rose-700 rounded-md text-xs font-bold border border-red-500/50">SELL</span>;
-    return <span className="px-2 py-1 bg-emerald-900/30 text-emerald-400 rounded-md text-xs font-bold border border-[#5A67D8]/30">HOLD</span>;
-  };
-
-  // Portfolio Calculations
-  let investedAmount = 0;
-  let currentValue = 0;
-  let profitLoss = 0;
-  let profitLossPercent = 0;
-  let smartAdvice = "Enter your portfolio details in the Manage Portfolio section below to generate custom AI advice.";
-
-  const parsedTotalInvested = parseFloat(totalInvestedInput);
-  const parsedUnits = parseFloat(units);
-
-  if (!isNaN(parsedTotalInvested) && !isNaN(parsedUnits) && parsedUnits > 0 && parsedTotalInvested > 0) {
-    investedAmount = parsedTotalInvested;
-    currentValue = current_price * parsedUnits;
-    profitLoss = currentValue - investedAmount;
-    profitLossPercent = (profitLoss / investedAmount) * 100;
-    
-    const sig = latestSignal?.Action || 'HOLD';
-    if (profitLoss > 0 && sig === 'SELL') {
-        smartAdvice = "TAKE PROFIT - You are up and AI predicts a downturn.";
-    } else if (profitLoss > 0 && sig === 'BUY') {
-        smartAdvice = "HOLD STRONG - You are in profit and momentum is still upwards.";
-    } else if (profitLoss > 0 && sig === 'HOLD') {
-        smartAdvice = "RIDING PROFITS - Neutral momentum, let it ride.";
-    } else if (profitLoss < 0 && sig === 'BUY') {
-        smartAdvice = "AVERAGE DOWN - You are down, but AI signals a strong buy/recovery.";
-    } else if (profitLoss < 0 && sig === 'SELL') {
-        smartAdvice = "CUT LOSSES - You are down and the AI predicts further drops.";
-    } else if (profitLoss < 0 && sig === 'HOLD') {
-        smartAdvice = "WAIT FOR RECOVERY - Neutral market, wait for a better exit.";
-    }
-  }
-
-  return (
+import re
+
+with open('src/app/page.js', 'r', encoding='utf-8') as f:
+    code = f.read()
+
+# 1. Add framer-motion import
+if "import { motion } from 'framer-motion'" not in code:
+    code = "import { motion } from 'framer-motion';\n" + code
+
+# 2. Reskin Chart setups to light theme
+code = code.replace("theme: { mode: 'dark' }", "theme: { mode: 'light' }")
+code = code.replace("grid: { borderColor: '#2B3139' }", "grid: { borderColor: '#E5E7EB' }")
+code = code.replace("grid: { borderColor: '#2B3139', strokeDashArray: 4 }", "grid: { borderColor: '#E5E7EB', strokeDashArray: 4 }")
+code = code.replace("colors: ['#10B981']", "colors: ['#5A67D8']") # Indigo primary line chart
+code = code.replace("xaxis: { type: 'datetime', labels: { style: { colors: '#9CA3AF' } } }", "xaxis: { type: 'datetime', labels: { style: { colors: '#6B7280' } } }")
+code = code.replace("labels: { style: { colors: '#9CA3AF' }", "labels: { style: { colors: '#6B7280' }")
+code = code.replace("labels: { formatter: (value) => '₹' + value.toFixed(2), style: { colors: '#9CA3AF' } }", "labels: { formatter: (value) => '₹' + value.toFixed(2), style: { colors: '#6B7280' } }")
+
+# 3. Reskin Loading and Error states
+code = code.replace(
+    'bg-[#181A20] text-gray-200', 
+    'bg-[#E8EFE9] text-gray-900'
+)
+code = code.replace(
+    'border-emerald-500', 
+    'border-[#5A67D8]'
+)
+code = code.replace(
+    'text-gray-200 bg-[#181A20] h-screen',
+    'text-gray-900 bg-[#E8EFE9] h-screen'
+)
+
+# 4. Find where "return (" starts for the main render block
+# We locate the exact line where the main return starts (usually around line 570)
+# We can find the match for "return (" after "const renderSignalBadge"
+start_idx = code.find("return (", code.find("const renderSignalBadge"))
+
+# The JSX content to inject
+new_jsx = '''return (
     <div className="min-h-screen bg-[#E8EFE9] text-gray-900 font-sans flex overflow-hidden">
       <Toaster position="top-right" toastOptions={{
         style: { background: '#FFFFFF', color: '#111827', border: '1px solid #E5E7EB', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }
@@ -789,40 +108,38 @@ const candlestickSeries = [{
         </header>
 
         {/* CONTAINER */}
-        <div className="p-6 md:p-8 pb-24 md:pb-8 max-w-[1400px] w-full mx-auto">
-          <AnimatePresence mode="wait">
-            {activeTab === 'overview' && (
-              <motion.div 
-                key="overview"
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.25, ease: "easeOut" }}
-                className="space-y-6"
-              >
+        <div className="p-8 max-w-[1400px] w-full mx-auto">
+          {activeTab === 'overview' && (
+            <motion.div 
+              initial="hidden" 
+              animate="show" 
+              variants={{
+                hidden: { opacity: 0 },
+                show: { opacity: 1, transition: { staggerChildren: 0.1, delayChildren: 0.1 } }
+              }} 
+              className="space-y-6"
+            >
               
               {/* TOP SUMMARY CARDS */}
-              <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } } }} className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } } }} className="grid grid-cols-1 md:grid-cols-2 gap-6">
                  <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm relative overflow-hidden">
-                    <p className="text-sm font-semibold text-gray-500 mb-2">Current Value (INR)</p>
-                    <div className="flex items-end space-x-4">
-                       <h2 className="text-3xl font-bold text-gray-900 font-mono tracking-tight">₹{currentValue.toFixed(2)}</h2>
-                       <span className={`font-semibold text-xs px-2.5 py-1 rounded-md mb-1 flex items-center ${profitLoss >= 0 ? 'text-emerald-500 bg-emerald-50' : 'text-rose-500 bg-rose-50'}`}>
-                         {profitLoss >= 0 ? <TrendingUp className="w-3 h-3 mr-1"/> : <TrendingDown className="w-3 h-3 mr-1"/>}
-                         {profitLoss >= 0 ? '+' : ''}₹{profitLoss.toFixed(2)} ({profitLossPercent.toFixed(2)}%)
-                       </span>
-                    </div>
-                 </div>
-                 <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-4 opacity-5"><Briefcase className="w-24 h-24 text-gray-900"/></div>
                     <p className="text-sm font-semibold text-gray-500 mb-2">Total Invested (INR)</p>
                     <div className="flex items-end space-x-4">
-                       <h2 className="text-3xl font-bold text-gray-900 font-mono tracking-tight">₹{investedAmount.toFixed(2)}</h2>
+                       <h2 className="text-4xl font-bold text-gray-900 font-mono tracking-tight">₹{investedAmount.toFixed(2)}</h2>
+                       <span className="text-emerald-500 font-semibold text-sm bg-emerald-50 px-2 py-1 rounded-md mb-1 flex items-center">
+                         <ArrowUpRight className="w-3 h-3 mr-1"/> +2.72%
+                       </span>
                     </div>
                  </div>
                  <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm relative overflow-hidden">
                     <p className="text-sm font-semibold text-gray-500 mb-2">Total Portfolio (Units)</p>
                     <div className="flex items-end space-x-4">
-                       <h2 className="text-3xl font-bold text-gray-900 font-mono tracking-tight">{units || 0} <span className="text-sm text-gray-400">UNITS</span></h2>
+                       <h2 className="text-4xl font-bold text-gray-900 font-mono tracking-tight">{units || 0} <span className="text-lg text-gray-400">UNITS</span></h2>
+                       <span className={`font-semibold text-sm px-2 py-1 rounded-md mb-1 flex items-center ${profitLossPercent >= 0 ? 'text-emerald-500 bg-emerald-50' : 'text-rose-500 bg-rose-50'}`}>
+                         {profitLossPercent >= 0 ? <TrendingUp className="w-3 h-3 mr-1"/> : <TrendingDown className="w-3 h-3 mr-1"/>}
+                         {profitLossPercent.toFixed(2)}%
+                       </span>
                     </div>
                  </div>
               </motion.div>
@@ -1001,18 +318,11 @@ const candlestickSeries = [{
                  </form>
               </motion.div>
 
-              </motion.div>
-            )}
+            </motion.div>
+          )}
 
-            {activeTab === 'ailab' && (
-              <motion.div 
-                key="ailab"
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.25, ease: "easeOut" }}
-                className="space-y-6"
-              >
+          {activeTab === 'ailab' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
               
               {/* Multi Agent System */}
               {agentsData && (
@@ -1142,18 +452,11 @@ const candlestickSeries = [{
 
               </div>
 
-              </motion.div>
-            )}
+            </motion.div>
+          )}
 
-            {activeTab === 'simulation' && (
-              <motion.div 
-                key="simulation"
-                initial={{ opacity: 0, y: 15 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.25, ease: "easeOut" }}
-                className="space-y-6"
-              >
+          {activeTab === 'simulation' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
               
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 
@@ -1392,37 +695,11 @@ const candlestickSeries = [{
 
               </div>
 
-              </motion.div>
-            )}
-          </AnimatePresence>
+            </motion.div>
+          )}
 
         </div>
       </main>
-
-      {/* MOBILE BOTTOM NAVIGATION */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-6 py-2 flex justify-around items-center z-40 shadow-lg">
-        <div 
-          onClick={() => setActiveTab('overview')}
-          className={`flex flex-col items-center justify-center space-y-0.5 cursor-pointer p-2 rounded-xl transition-all ${activeTab === 'overview' ? 'text-[#5A67D8]' : 'text-gray-400'}`}
-        >
-          <BarChart2 className="w-5 h-5" />
-          <span className="text-[10px] font-bold">Dashboard</span>
-        </div>
-        <div 
-          onClick={() => setActiveTab('ailab')}
-          className={`flex flex-col items-center justify-center space-y-0.5 cursor-pointer p-2 rounded-xl transition-all ${activeTab === 'ailab' ? 'text-[#5A67D8]' : 'text-gray-400'}`}
-        >
-          <Cpu className="w-5 h-5" />
-          <span className="text-[10px] font-bold">AI Lab</span>
-        </div>
-        <div 
-          onClick={() => setActiveTab('simulation')}
-          className={`flex flex-col items-center justify-center space-y-0.5 cursor-pointer p-2 rounded-xl transition-all ${activeTab === 'simulation' ? 'text-[#5A67D8]' : 'text-gray-400'}`}
-        >
-          <ShieldCheck className="w-5 h-5" />
-          <span className="text-[10px] font-bold">Risk</span>
-        </div>
-      </div>
 
       {/* Floating Chatbot */}
       <div className="fixed bottom-6 right-6 z-50">
@@ -1523,5 +800,12 @@ const candlestickSeries = [{
       )}
 
     </div>
-  );
-}
+  );'''
+
+# Replace from "return (" to the end of the file with the new JSX code
+code = code[:start_idx] + new_jsx
+
+with open('src/app/page.js', 'w', encoding='utf-8') as f:
+    f.write(code)
+
+print("Layout merged successfully!")
