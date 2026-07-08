@@ -765,26 +765,31 @@ const candlestickSeries = [{
       </aside>
 
       {/* MAIN CONTENT AREA */}
-      <main className="flex-1 flex flex-col h-screen overflow-y-auto">
+      <main className="flex-1 flex flex-col h-screen overflow-y-auto overflow-x-hidden">
         
         {/* TOP HEADER */}
-        <header className="bg-white px-8 py-4 flex items-center justify-between border-b border-gray-100 sticky top-0 z-20 shadow-sm">
-           <div className="flex items-center text-sm font-medium text-gray-500 bg-gray-50 px-4 py-2 rounded-lg border border-gray-100">
+        <header className="bg-white px-4 sm:px-8 py-3 sm:py-4 flex items-center justify-between border-b border-gray-100 sticky top-0 z-20 shadow-sm">
+           <div className="hidden md:flex items-center text-sm font-medium text-gray-500 bg-gray-50 px-4 py-2 rounded-lg border border-gray-100">
              <Calendar className="w-4 h-4 mr-2" /> GoldBeES Market Analyzer
            </div>
+           {/* Mobile Title Placeholder */}
+           <div className="flex md:hidden items-center">
+             <div className="w-8 h-8 bg-emerald-600 rounded-lg mr-2 flex items-center justify-center text-white font-black text-xs">G</div>
+             <span className="font-bold text-gray-900 text-sm">GoldBeES</span>
+           </div>
            
-           <div className="flex items-center space-x-6">
+           <div className="flex items-center space-x-3 sm:space-x-6">
              <a href={`${API_BASE_URL}/report`} target="_blank" rel="noreferrer" className="text-gray-400 hover:text-gray-600 transition-colors">
                <Download className="w-5 h-5" />
              </a>
              {userId ? (
-               <button onClick={handleLogout} className="text-sm text-red-500 font-medium hover:text-red-600">Log Out</button>
+               <button onClick={handleLogout} className="text-xs sm:text-sm text-red-500 font-medium hover:text-red-600">Log Out</button>
              ) : (
-               <button onClick={() => setShowAuthModal(true)} className="text-sm text-[#5A67D8] font-bold hover:text-indigo-700 bg-indigo-50 px-4 py-2 rounded-lg">Log In / Register</button>
+               <button onClick={() => setShowAuthModal(true)} className="text-xs sm:text-sm text-[#5A67D8] font-bold hover:text-indigo-700 bg-indigo-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg">Log In</button>
              )}
-             <div className="w-px h-6 bg-gray-200"></div>
-             <div className="flex items-center space-x-3 cursor-pointer">
-               <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center border-2 border-white shadow-sm overflow-hidden">
+             <div className="hidden sm:block w-px h-6 bg-gray-200"></div>
+             <div className="flex items-center space-x-2 sm:space-x-3 cursor-pointer">
+               <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-gray-100 flex items-center justify-center border-2 border-white shadow-sm overflow-hidden">
                   <span className="text-gray-500 font-bold text-xs">U</span>
                </div>
                <div className="hidden sm:block text-sm font-bold text-gray-700">{userId || "Guest"}</div>
@@ -837,7 +842,7 @@ const candlestickSeries = [{
                 {/* LEFT: CHART AREA */}
                 <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } } }} className="lg:col-span-2 space-y-6">
                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                      <div className="flex justify-between items-start mb-6">
+                      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start mb-6 space-y-4 sm:space-y-0">
                         <div>
                            <div className="flex items-center mb-2">
                              <div className="w-6 h-6 bg-yellow-100 rounded-md flex items-center justify-center mr-2"><span className="text-yellow-600 font-bold text-xs">G</span></div>
@@ -845,12 +850,12 @@ const candlestickSeries = [{
                            </div>
                            <h2 className="text-3xl font-bold text-gray-900 font-mono">₹{current_price.toFixed(2)}</h2>
                         </div>
-                        <div className="flex space-x-2">
+                        <div className="flex space-x-1 overflow-x-auto pb-1 max-w-full no-scrollbar whitespace-nowrap">
                           {['1D', '5D', '1M', 'YTD', '6M', '1Y', '5Y', 'MAX'].map(tf => (
                             <span 
                               key={tf}
                               onClick={() => setChartTimeframe(tf)}
-                              className={`px-3 py-1.5 text-xs font-semibold rounded-lg cursor-pointer transition-colors ${chartTimeframe === tf ? 'bg-[#5A67D8] text-white shadow-sm shadow-indigo-200' : 'text-gray-500 hover:bg-gray-100'}`}
+                              className={`inline-block px-2.5 py-1.5 text-[10px] sm:text-xs font-semibold rounded-lg cursor-pointer transition-colors ${chartTimeframe === tf ? 'bg-[#5A67D8] text-white shadow-sm shadow-indigo-200' : 'text-gray-500 hover:bg-gray-100'}`}
                             >
                               {tf}
                             </span>
@@ -1429,9 +1434,9 @@ const candlestickSeries = [{
       </div>
 
       {/* Floating Chatbot */}
-      <div className="fixed bottom-6 right-6 z-50">
+      <div className="fixed bottom-20 md:bottom-6 right-4 sm:right-6 z-50">
         {isChatOpen ? (
-          <div className="bg-white border border-gray-100 shadow-2xl w-80 h-96 rounded-2xl flex flex-col overflow-hidden">
+          <div className="bg-white border border-gray-100 shadow-2xl w-[calc(100vw-2rem)] sm:w-80 h-96 rounded-2xl flex flex-col overflow-hidden">
             <div className="bg-[#5A67D8] p-4 text-white flex justify-between items-center cursor-pointer shadow-sm" onClick={() => setIsChatOpen(false)}>
               <span className="font-bold flex items-center"><MessageCircle className="w-5 h-5 mr-2" /> AI Assistant</span>
               <span className="text-indigo-200 hover:text-white">&times;</span>
