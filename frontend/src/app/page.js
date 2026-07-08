@@ -37,7 +37,7 @@ const getApiBaseUrl = () => {
   return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 };
 
-const API_BASE_URL = getApiBaseUrl();
+const API_BASE_URL = getApiBaseUrl().replace(/\/$/, "");
 const WS_BASE_URL = API_BASE_URL.replace('http', 'ws');
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
