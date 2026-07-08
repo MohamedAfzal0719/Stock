@@ -505,7 +505,7 @@ def save_portfolio(req: PortfolioRequest, current_user: dict = Depends(get_curre
         c = conn.cursor()
         c.execute('''
             INSERT INTO portfolios (user_id, total_invested, units, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT(user_id) DO UPDATE SET
                 total_invested=excluded.total_invested,
                 units=excluded.units,
