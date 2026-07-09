@@ -450,6 +450,9 @@ export default function Dashboard() {
               forecast: json.forecast
             };
           });
+          if (json.macro) {
+            setMacroData(json.macro);
+          }
         }
       } catch (err) {
         console.error("Error parsing websocket data", err);

@@ -409,6 +409,34 @@ def get_live_price(ticker: str = "GOLDBEES.NS") -> float:
         
     return None
 
+def fetch_live_macro_rates() -> dict:
+    import requests
+    import re
+    
+    # USD to INR Exchange Rate
+    try:
+        res_usd = requests.get('https://www.google.com/finance/quote/USD-INR', timeout=5)
+        match_usd = re.search(r'data-last-price="([0-9\.]+)"', res_usd.text)
+        usd_inr = float(match_usd.group(1)) if match_usd else 95.50
+    except Exception as e:
+        logger.warning(f"Failed to fetch USD-INR rate: {e}")
+        usd_inr = 95.50
+    
+    # Global Gold Futures (USD per Ounce)
+    try:
+        res_gold = requests.get('https://www.google.com/finance/quote/GCW00:COMEX', timeout=5)
+        match_gold = re.search(r'data-last-price="([0-9\.]+)"', res_gold.text)
+        gold_usd = float(match_gold.group(1)) if match_gold else 2350.00
+    except Exception as e:
+        logger.warning(f"Failed to fetch Gold Futures: {e}")
+        gold_usd = 2350.00
+
+    return {
+        "USD_INR": usd_inr,
+        "Gold_Spot": gold_usd,
+        "Gold_Futures_USD": gold_usd
+    }
+
 @app.post("/custom-forecast", response_model=ResponseModel)
 def custom_forecast(request: CustomForecastRequest):
     try:
@@ -431,33 +459,15 @@ def get_macro_data():
     Fetch live macro-economic data (USD/INR and Global Gold Futures)
     """
     try:
-        import requests
-        import re
-
-        # USD to INR Exchange Rate
-        try:
-            res_usd = requests.get('https://www.google.com/finance/quote/USD-INR')
-            match_usd = re.search(r'data-last-price="([0-9\.]+)"', res_usd.text)
-            usd_inr = float(match_usd.group(1)) if match_usd else 83.50
-        except:
-            usd_inr = 83.50
-        
-        # Global Gold Futures (USD per Ounce)
-        try:
-            res_gold = requests.get('https://www.google.com/finance/quote/GCW00:COMEX')
-            match_gold = re.search(r'data-last-price="([0-9\.]+)"', res_gold.text)
-            gold_usd = float(match_gold.group(1)) if match_gold else 2350.00
-        except:
-            gold_usd = 2350.00
-        
+        rates = fetch_live_macro_rates()
         data = {
-            "USD_INR": float(usd_inr),
-            "Gold_Futures_USD": float(gold_usd)
+            "USD_INR": rates["USD_INR"],
+            "Gold_Futures_USD": rates["Gold_Futures_USD"]
         }
         return {"status": "success", "message": "Macro data retrieved", "data": data}
     except Exception as e:
         logger.warning(f"Failed to fetch macro data: {e}")
-        return {"status": "success", "message": "Macro data (fallback)", "data": {"USD_INR": 83.50, "Gold_Futures_USD": 2350.00}}
+        return {"status": "success", "message": "Macro data (fallback)", "data": {"USD_INR": 95.50, "Gold_Futures_USD": 2350.00}}
 
 # --- API Endpoints ---
 
@@ -870,12 +880,17 @@ def get_multi_agent_decision():
         if engine.df is None or engine.df.empty:
             raise ValueError("No historical data available for agents.")
             
-        last_row = engine.df.iloc[-1]
+        last_row = engine.df.iloc[-1].copy()
         
         # Add live price to it if possible
         live_price = get_live_price()
         if live_price:
             last_row['Close'] = live_price
+            
+        # Add live macro data to it if possible
+        macro_rates = fetch_live_macro_rates()
+        last_row['USD_INR'] = macro_rates['USD_INR']
+        last_row['Gold_Spot'] = macro_rates['Gold_Spot']
             
         chief = ChiefInvestmentAI()
         report = chief.analyze(last_row)
@@ -897,7 +912,7 @@ def get_rl_status():
         if engine.df is None or engine.df.empty:
             raise ValueError("No historical data available for RL Agent.")
             
-        last_row = engine.df.iloc[-1]
+        last_row = engine.df.iloc[-1].copy()
         
         live_price = get_live_price()
         if live_price:
@@ -957,14 +972,21 @@ async def websocket_endpoint(websocket: WebSocket):
             forecast = engine.forecast_horizons(live_price=current_price)
             forecast["Current_Price"] = current_price
             
+            # 3. Fetch live macro-economic rates
+            macro_rates = fetch_live_macro_rates()
+            
             payload = {
                 "status": "success",
                 "current_price": current_price,
-                "forecast": forecast
+                "forecast": forecast,
+                "macro": {
+                    "USD_INR": macro_rates["USD_INR"],
+                    "Gold_Futures_USD": macro_rates["Gold_Futures_USD"]
+                }
             }
             await websocket.send_json(payload)
-            # Sleep 3 seconds (balance between real-time responsiveness and avoiding rate limits)
-            await asyncio.sleep(3.0)
+            # Sleep 10 seconds (as requested by user to prevent Google Finance IP block)
+            await asyncio.sleep(10.0)
     except WebSocketDisconnect:
         logger.info("Live WebSocket client disconnected.")
     except Exception as e:

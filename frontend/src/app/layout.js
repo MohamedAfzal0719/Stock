@@ -14,6 +14,7 @@ const geistMono = Geist_Mono({
 export const metadata = {
   title: "GoldBeES AI Trading Dashboard",
   description: "AI-powered Gold ETF Forecasting Dashboard",
+  manifest: "/manifest.json",
 };
 
 export default function RootLayout({ children }) {

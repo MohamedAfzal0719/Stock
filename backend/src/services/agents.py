@@ -62,15 +62,15 @@ class MacroEconomistAgent(BaseAgent):
         super().__init__("Macro Economist")
 
     def analyze(self, current_data: pd.Series) -> Dict[str, Any]:
-        usd_inr = current_data.get('USD_INR', 83.0)
+        usd_inr = current_data.get('USD_INR', 95.50)
         gold_spot = current_data.get('Gold_Spot', 2000.0)
         
         # Simplified logic: High gold is good for GoldBeES, weak INR (high USD_INR) is good for GoldBeES
         # We need historical averages to know if it's "high" or "low", but we'll use a mock baseline for the agent
         score = 0
-        if usd_inr > 83.5:
+        if usd_inr > 95.5:
             score += 1
-        elif usd_inr < 82.5:
+        elif usd_inr < 94.5:
             score -= 1
             
         if gold_spot > 2300:
