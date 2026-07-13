@@ -41,11 +41,9 @@ class DataCleaner:
                 df.set_index('Date', inplace=True)
                 df.sort_index(inplace=True)
             
-            # Ensure numeric columns
-            numeric_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            # Ensure numeric columns (all columns except Date if Date is index, or just everything except 'Date')
+            for col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
 
             # 2. Handle duplicates
             duplicates = df.index.duplicated().sum()

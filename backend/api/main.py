@@ -2,6 +2,7 @@ import matplotlib
 matplotlib.use('Agg')
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from py_vapid import Vapid
 from py_vapid.utils import b64urlencode
@@ -34,6 +35,19 @@ from src.models.train_all import main as train_all_models
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+import threading
+_inference_engines = {}
+_engine_lock = threading.Lock()
+
+def get_engine(model_name: str = "StackingRegressor"):
+    if model_name not in _inference_engines:
+        with _engine_lock:
+            if model_name not in _inference_engines:
+                logger.info(f"Initializing global InferenceEngine for {model_name}...")
+                _inference_engines[model_name] = InferenceEngine(model_name=model_name)
+    return _inference_engines[model_name]
+
 
 # Set up SQLite database
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -145,14 +159,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
-    title="GoldBeES AI Trading API",
-    description="Production-ready API for Gold ETF Forecasting",
-    version="2.0.0"
+    title="GoldBeES AI Trading Engine"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://192.168.1.3:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -219,7 +231,7 @@ def get_predictions(model_name: str = "LinearRegression"):
     Get 1-day prediction and AI signals for the current market state.
     """
     try:
-        engine = InferenceEngine(model_name=model_name)
+        engine = get_engine(model_name=model_name)
         signals = engine.generate_signals()
         
         if signals.empty:
@@ -238,7 +250,7 @@ def get_forecasts(model_name: str = "LinearRegression"):
     Get multi-horizon forecasts (1, 5, 30, 90 days).
     """
     try:
-        engine = InferenceEngine(model_name=model_name)
+        engine = get_engine(model_name=model_name)
         forecasts = engine.forecast_horizons()
         return {"status": "success", "message": "Forecasts generated.", "data": forecasts}
     except HTTPException as he:
@@ -310,12 +322,28 @@ def get_historical_signals(model_name: str = "LinearRegression", days: int = 30)
     Get historical BUY/HOLD/SELL signals for the last 'n' days.
     """
     try:
-        engine = InferenceEngine(model_name=model_name)
+        engine = get_engine(model_name=model_name)
         signals = engine.generate_signals()
         
         if signals.empty:
             raise HTTPException(status_code=400, detail="No data available.")
             
+        # --- SYNCHRONIZE WITH CHIEF AI MASTER SIGNAL ---
+        from src.services.agents import ChiefInvestmentAI
+        last_row = engine.df.iloc[-1].copy()
+        live_price = get_live_price()
+        if live_price: last_row['Close'] = live_price
+        macro_rates = fetch_live_macro_rates()
+        last_row['USD_INR'] = macro_rates['USD_INR']
+        last_row['Gold_Spot'] = macro_rates['Gold_Spot']
+        
+        chief = ChiefInvestmentAI()
+        report = chief.analyze(last_row)
+        master_signal = report.get('final_signal', 'HOLD')
+        
+        # Override the last row's action
+        signals.iloc[-1, signals.columns.get_loc('Action')] = master_signal
+        
         # Trigger background web push checks
         check_and_trigger_push(signals)
             
@@ -396,7 +424,7 @@ def get_live_price(ticker: str = "GOLDBEES.NS") -> float:
         # Try Google Finance first (very reliable, avoids yfinance IP bans)
         # Convert Yahoo ticker format to Google Finance format (GOLDBEES:NSE)
         gf_ticker = ticker.split('.')[0] + ":NSE"
-        res = requests.get(f'https://www.google.com/finance/quote/{gf_ticker}')
+        res = requests.get(f'https://www.google.com/finance/quote/{gf_ticker}', timeout=5)
         match = re.search(r'data-last-price="([0-9\.]+)"', res.text)
         
         if match:
@@ -441,7 +469,7 @@ def fetch_live_macro_rates() -> dict:
 def custom_forecast(request: CustomForecastRequest):
     try:
         live_price = get_live_price()
-        engine = InferenceEngine(model_name=request.model_name)
+        engine = get_engine(model_name=request.model_name)
         result = engine.custom_forecast(request.target_date, live_price=live_price)
         
         if "error" in result:
@@ -569,7 +597,7 @@ def get_vapid_public_key():
     return {"status": "success", "message": "VAPID key retrieved", "data": {"public_key": VAPID_PUBLIC_KEY}}
 
 @app.get("/dashboard", response_model=ResponseModel)
-def get_dashboard_data(model_name: str = "LinearRegression"):
+def get_dashboard_data(model_name: str = "StackingRegressor"):
     """
     Aggregates data needed for the frontend React dashboard.
     """
@@ -578,7 +606,7 @@ def get_dashboard_data(model_name: str = "LinearRegression"):
         live_price = get_live_price()
         
         # Load Risk and Forecasts
-        engine = InferenceEngine(model_name=model_name)
+        engine = get_engine(model_name=model_name)
         risk = engine.calculate_risk()
         forecast = engine.forecast_horizons(live_price=live_price)
         
@@ -602,13 +630,13 @@ def get_dashboard_data(model_name: str = "LinearRegression"):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/intelligence", response_model=ResponseModel)
-def get_intelligence(model_name: str = "LinearRegression"):
+def get_intelligence(model_name: str = "StackingRegressor"):
     """
     Returns all Wave 1 AI intelligence data: SHAP, Market Regime, Anomaly, Confidence Score.
     """
     try:
         live_price = get_live_price()
-        engine = InferenceEngine(model_name=model_name)
+        engine = get_engine(model_name=model_name)
 
         shap_data = engine.get_shap_values()
         regime = engine.detect_market_regime()
@@ -633,7 +661,7 @@ def get_wave2_data(model_name: str = "LinearRegression"):
     """
     try:
         live_price = get_live_price()
-        engine = InferenceEngine(model_name=model_name)
+        engine = get_engine(model_name=model_name)
         
         prob_dist = engine.get_probability_distribution(live_price=live_price)
         similar_days = engine.find_similar_days()
@@ -662,7 +690,7 @@ def simulate_scenario(req: SimulationRequest):
     """
     try:
         live_price = get_live_price()
-        engine = InferenceEngine(model_name=req.model_name)
+        engine = get_engine(model_name=req.model_name)
         result = engine.simulate_scenario(variable=req.variable, change_pct=req.change_pct, live_price=live_price)
         return {"status": "success", "message": "Simulation complete", "data": result}
     except HTTPException as he:
@@ -713,7 +741,7 @@ def chat_with_portfolio(req: ChatRequest, request: Request):
     RAG Chatbot using Groq with optional Portfolio context
     """
     try:
-        engine = InferenceEngine()
+        engine = get_engine()
         regime = engine.detect_market_regime()
         live_price = get_live_price()
         
@@ -848,7 +876,7 @@ def generate_pdf_report():
         c.setFont("Helvetica", 14)
         c.drawString(50, 750, f"Current Live Price: INR {live_price}")
         
-        engine = InferenceEngine()
+        engine = get_engine()
         regime = engine.detect_market_regime()
         c.drawString(50, 720, f"Market Regime: {regime['regime']} (Confidence: {regime['confidence']}%)")
         
@@ -876,7 +904,7 @@ def get_multi_agent_decision():
     Returns the Multi-Agent decision matrix.
     """
     try:
-        engine = InferenceEngine()
+        engine = get_engine()
         if engine.df is None or engine.df.empty:
             raise ValueError("No historical data available for agents.")
             
@@ -908,7 +936,7 @@ def get_rl_status():
     Returns the current state of the RL (PPO) Trading Agent.
     """
     try:
-        engine = InferenceEngine()
+        engine = get_engine()
         if engine.df is None or engine.df.empty:
             raise ValueError("No historical data available for RL Agent.")
             
@@ -920,6 +948,20 @@ def get_rl_status():
             
         rl_agent = ReinforcementLearningAgent()
         status = rl_agent.get_status(last_row)
+        
+        # --- SYNCHRONIZE WITH CHIEF AI MASTER SIGNAL ---
+        from src.services.agents import ChiefInvestmentAI
+        macro_rates = fetch_live_macro_rates()
+        last_row['USD_INR'] = macro_rates['USD_INR']
+        last_row['Gold_Spot'] = macro_rates['Gold_Spot']
+        
+        chief = ChiefInvestmentAI()
+        report = chief.analyze(last_row)
+        master_signal = report.get('final_signal', 'HOLD')
+        
+        # Keep original confidence percentage but override action text
+        original_conf = str(status.get('action_confidence', '')) + '%' if 'action_confidence' in status else '(Synced)'
+        status['current_action'] = f"{master_signal} ({original_conf})"
         
         return {"status": "success", "message": "RL status retrieved", "data": status}
     except Exception as e:
@@ -948,6 +990,71 @@ def backtest_custom_strategy(payload: StrategyPayload):
         logger.error(f"Backtest error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/predict-tomorrow", response_model=ResponseModel)
+def predict_tomorrow(live_price: float = None):
+    try:
+        if live_price is None:
+            live_price = get_live_price()
+            
+        engine = get_engine()
+        res = engine.predict_tomorrow(live_price)
+        if "error" in res:
+            raise HTTPException(status_code=400, detail=res["error"])
+        # Add AI reasoning
+        reasoning = engine.get_ai_reasoning(res)
+        res["Reasoning"] = reasoning
+        return {"status": "success", "message": "Tomorrow prediction generated", "data": res}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Predict tomorrow error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/news-intelligence", response_model=ResponseModel)
+def get_news_intelligence(background_tasks: BackgroundTasks):
+    try:
+        # Ingest RSS feeds in the background to avoid blocking the UI
+        from src.services.news_nlp import NewsEventStore
+        background_tasks.add_task(NewsEventStore.ingest_rss_feeds)
+        
+        conn = psycopg2.connect(DATABASE_URL)
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Load consolidated events
+        c.execute("""
+            SELECT event_id, event_time, event_type, importance, affected_assets, country, summary, sentiment, source_count
+            FROM market_events
+            ORDER BY event_time DESC LIMIT 10
+        """)
+        events = c.fetchall()
+        
+        # Load recent articles
+        c.execute("""
+            SELECT id, published_at, source, headline, url, sentiment_score, confidence, event_id
+            FROM news_articles
+            ORDER BY published_at DESC LIMIT 15
+        """)
+        articles = c.fetchall()
+        conn.close()
+        
+        # Format datetimes
+        for ev in events:
+            ev['event_time'] = ev['event_time'].isoformat()
+        for art in articles:
+            art['published_at'] = art['published_at'].isoformat()
+            
+        return {
+            "status": "success",
+            "message": "Market news events loaded.",
+            "data": {
+                "events": events,
+                "articles": articles
+            }
+        }
+    except Exception as e:
+        logger.error(f"News intelligence error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 import asyncio
 import random
 
@@ -955,7 +1062,7 @@ import random
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
-        engine = InferenceEngine()
+        engine = get_engine()
         live_price = get_live_price()
         if live_price is None:
             live_price = float(engine.df[engine.target_col].iloc[-1]) if engine.df is not None else 118.57

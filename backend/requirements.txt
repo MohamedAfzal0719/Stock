@@ -37,3 +37,6 @@ reportlab
 joblib
 bcrypt
 cryptography
+transformers
+huggingface-hub
+vaderSentiment

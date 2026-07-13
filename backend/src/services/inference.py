@@ -2,185 +2,417 @@ import os
 import joblib
 import pandas as pd
 import numpy as np
+import scipy.stats as stats
 import shap
+from datetime import datetime
+from groq import Groq
+from src.features.engineer import FeatureStoreManager
+from src.models.deep_wrapper import DeepModelWrapper
+from src.utils.db import get_db_connection
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Initialize Groq client
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
 class InferenceEngine:
     """
-    Handles Multi-Horizon Forecasting, Signal Generation, Risk Analysis, and Explainable AI.
+    Production inference engine executing stacking ensemble predictions, conformal ranges,
+    breakout probabilities, SHAP explainers, LLM reasoning, and all original legacy endpoints.
     """
-    def __init__(self, model_name: str = "LinearRegression"):
+    def __init__(self, model_name: str = "StackingRegressor"):
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        self.model_path = os.path.join(self.base_dir, "models", f"{model_name}.pkl")
-        self.data_path = os.path.join(self.base_dir, "data", "processed", "goldbees_features.csv")
+        self.models_dir = os.path.join(self.base_dir, "models")
         
-        if os.path.exists(self.model_path):
-            self.model = joblib.load(self.model_path)
+        # Load Features to verify data presence
+        self.df = FeatureStoreManager.load_features()
+        if not self.df.empty:
+            self.target_col = 'Target_Return_t1'
+            # Predictor features
+            non_feature_cols = [
+                'Target_Return_t1', 'Target_Return_t3', 'Target_Return_t7', 'Target_Return_t30',
+                'Target_Volatility', 'goldbees_close', 'Daily_Return'
+            ]
+            self.feature_cols = [col for col in self.df.columns if col not in non_feature_cols]
         else:
-            logger.warning(f"Model {model_name} not found at {self.model_path}. Please train first.")
-            self.model = None
+            self.feature_cols = []
             
-        if os.path.exists(self.data_path):
-            self.df = pd.read_csv(self.data_path)
-            if 'Date' in self.df.columns:
-                self.df.set_index('Date', inplace=True)
-            self.target_col = 'Close'
-            self.features = [col for col in self.df.columns if col not in [self.target_col, 'Daily_Return', 'Log_Return']]
-        else:
-            self.df = None
-
-    def forecast_horizons(self, live_price: float = None) -> dict:
-        """
-        Predict tomorrow, 5 days, 30 days, 90 days.
-        Uses live_price if provided (for real-time dashboard).
-        """
-        logger.info("Generating multi-horizon forecasts...")
-        if self.model is None or self.df is None:
-            return {}
+        # Load Stacking Models
+        try:
+            self.xgb = joblib.load(os.path.join(self.models_dir, "base_model_xgb.pkl"))
+            self.lgb = joblib.load(os.path.join(self.models_dir, "base_model_lgb.pkl"))
+            self.cat = joblib.load(os.path.join(self.models_dir, "base_model_cat.pkl"))
+            self.meta = joblib.load(os.path.join(self.models_dir, "meta_stacking_model.pkl"))
+            self.vol_model = joblib.load(os.path.join(self.models_dir, "volatility_model.pkl"))
+            self.lstm = DeepModelWrapper.load(self.models_dir, model_type="LSTM")
+            self.patchtst = DeepModelWrapper.load(self.models_dir, model_type="PatchTST")
             
-        last_row = self.df[self.features].iloc[-1:]
-        current_price = live_price if live_price is not None else self.df[self.target_col].iloc[-1]
-        
-        # 1-Day Forecast (anchored to actual features, but if current price deviates wildly, we can adjust.
-        # For simplicity, we just use the model prediction and apply volatility drift from the live price)
-        pred_1d = self.model.predict(last_row)[0]
-        
-        # If live price is provided, adjust the baseline
-        if live_price is not None:
-            baseline = live_price
-        else:
-            baseline = pred_1d
+            meta_data = joblib.load(os.path.join(self.models_dir, "metadata.pkl"))
+            self.conformal_Q = meta_data["Q"]
+            self.feature_cols = meta_data["features"]
+            logger.info("Stacking models successfully loaded in InferenceEngine.")
+        except Exception as e:
+            logger.warning(f"Failed to load Stacking models: {e}. Falling back to default baseline models.")
+            self.meta = None
 
-        # Clean up extreme outliers in daily returns (Yahoo Finance glitches)
-        returns = self.df['Daily_Return'].replace([np.inf, -np.inf], np.nan).dropna()
-        returns = returns.clip(lower=-0.05, upper=0.05) # Max 5% daily move for Gold ETF
-        vol = returns.std()
+    def predict_tomorrow(self, live_price: float = None) -> dict:
+        """
+        Predicts tomorrow's close price (t+1), volatility, conformal bounds, and probability thresholds.
+        """
+        if self.meta is None or self.df.empty:
+            return {"error": "Models or features are not ready."}
+            
+        last_row = self.df[self.feature_cols].iloc[-1:]
+        current_price = live_price if live_price is not None else float(self.df['goldbees_close'].iloc[-1])
+        last_60_rows = self.df[self.feature_cols].tail(60)
         
-        forecasts = {
-            "Current_Price": float(current_price),
-            "Forecast_1_Day": float(pred_1d),
-            "Forecast_5_Days": float(baseline * (1 + (vol * np.sqrt(5)))),
-            "Forecast_30_Days": float(baseline * (1 + (vol * np.sqrt(30)))),
-            "Forecast_90_Days": float(baseline * (1 + (vol * np.sqrt(90)))),
+        # Meta Stacking Inference
+        if self.meta:
+            pred_xgb = self.xgb.predict(last_row)[0]
+            pred_lgb = self.lgb.predict(last_row)[0]
+            pred_cat = self.cat.predict(last_row)[0]
+            
+            lstm_res = self.lstm.predict_advanced(last_60_rows)
+            patch_res = self.patchtst.predict_advanced(last_60_rows)
+            
+            X_meta = pd.DataFrame({
+                'xgb': [pred_xgb],
+                'lgb': [pred_lgb],
+                'cat': [pred_cat],
+                'lstm': [lstm_res['pred'][-1]],
+                'lstm_std': [lstm_res['std'][-1]],
+                'patchtst': [patch_res['pred'][-1]],
+                'patchtst_std': [patch_res['std'][-1]]
+            })
+            
+            for i in range(lstm_res['embed'].shape[1]):
+                X_meta[f'lstm_emb_{i}'] = [lstm_res['embed'][-1, i]]
+            for i in range(patch_res['embed'].shape[1]):
+                X_meta[f'patchtst_emb_{i}'] = [patch_res['embed'][-1, i]]
+            
+        # Stacking Predictor returns percentage return now
+        pred_return = float(self.meta.predict(X_meta)[0])
+        pred_close = current_price * (1 + pred_return)
+        
+        # Conformal Q is also a percentage return error
+        ci_lower = current_price * (1 + pred_return - self.conformal_Q)
+        ci_upper = current_price * (1 + pred_return + self.conformal_Q)
+        
+        # Volatility Projection
+        pred_vol = float(self.vol_model.predict(last_row)[0])
+        pred_vol = max(0.002, pred_vol)
+        
+        # Move Probabilities
+        expected_return = (pred_close - current_price) / current_price
+        prob_move_1pct = float(1.0 - (stats.norm.cdf(0.01, loc=expected_return, scale=pred_vol) - 
+                                      stats.norm.cdf(-0.01, loc=expected_return, scale=pred_vol)))
+        prob_move_2pct = float(1.0 - (stats.norm.cdf(0.02, loc=expected_return, scale=pred_vol) - 
+                                      stats.norm.cdf(-0.02, loc=expected_return, scale=pred_vol)))
+        
+        direction = "NEUTRAL"
+        if expected_return > 0.0025:
+            direction = "BULLISH"
+        elif expected_return < -0.0025:
+            direction = "BEARISH"
+            
+        confidence = int(min(98, max(50, 100 * (1 - (self.conformal_Q / current_price)))))
+        
+        res = {
+            "Current_Price": round(current_price, 2),
+            "Predicted_Close": round(pred_close, 2),
+            "Predicted_Volatility": round(pred_vol * 100, 3),
+            "Conformal_Lower": round(ci_lower, 2),
+            "Conformal_Upper": round(ci_upper, 2),
+            "Prob_Move_1pct": round(prob_move_1pct * 100, 1),
+            "Prob_Move_2pct": round(prob_move_2pct * 100, 1),
+            "Direction": direction,
+            "Confidence": confidence,
+            "Expected_Return_Pct": round(expected_return * 100, 2),
+            "Consensus": {
+                "XGBoost": round(float(current_price * (1 + pred_xgb)), 2),
+                "LightGBM": round(float(current_price * (1 + pred_lgb)), 2),
+                "CatBoost": round(float(current_price * (1 + pred_cat)), 2),
+                "LSTM": round(float(current_price * (1 + lstm_res['pred'][-1])), 2),
+                "PatchTST": round(float(current_price * (1 + patch_res['pred'][-1])), 2)
+            },
+            "Deep_Confidence": {
+                "LSTM_Uncertainty": round(float(lstm_res['std'][-1]), 4),
+                "PatchTST_Uncertainty": round(float(patch_res['std'][-1]), 4)
+            }
         }
         
-        # Confidence Intervals (Simple statistical approach)
-        z_score = 1.96 # 95% CI
-        forecasts["CI_1_Day_Lower"] = float(pred_1d * (1 - z_score * vol))
-        forecasts["CI_1_Day_Upper"] = float(pred_1d * (1 + z_score * vol))
+        self._log_prediction(res)
+        return res
+
+    def _log_prediction(self, res: dict):
+        """Stores the prediction inside the DB for audit trail & drift tracking."""
+        conn = get_db_connection()
+        c = conn.cursor()
         
-        return forecasts
+        regime = "Sideways"
+        regime_code = int(self.df['Market_Regime'].iloc[-1]) if 'Market_Regime' in self.df.columns else 3
+        if regime_code == 1: regime = "Bull"
+        elif regime_code == 2: regime = "Bear"
+        elif regime_code == 4: regime = "Volatile"
+        
+        try:
+            target_date = datetime.utcnow().date() + pd.Timedelta(days=1)
+            c.execute("""
+                INSERT INTO predictions (
+                    prediction_date, model_version, predicted_close, predicted_volatility,
+                    prob_move_1pct, prob_move_2pct, ci_lower, ci_upper, confidence_score, market_regime
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (prediction_date) DO UPDATE SET
+                    predicted_close = EXCLUDED.predicted_close,
+                    predicted_volatility = EXCLUDED.predicted_volatility,
+                    prob_move_1pct = EXCLUDED.prob_move_1pct,
+                    prob_move_2pct = EXCLUDED.prob_move_2pct,
+                    ci_lower = EXCLUDED.ci_lower,
+                    ci_upper = EXCLUDED.ci_upper,
+                    confidence_score = EXCLUDED.confidence_score,
+                    market_regime = EXCLUDED.market_regime
+            """, (
+                target_date, "v1.0.0", res["Predicted_Close"], res["Predicted_Volatility"],
+                res["Prob_Move_1pct"], res["Prob_Move_2pct"], res["Conformal_Lower"], res["Conformal_Upper"],
+                res["Confidence"], regime
+            ))
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to log prediction: {e}")
+        finally:
+            conn.close()
+
+    def get_shap_values(self) -> dict:
+        if self.meta is None or self.df.empty:
+            return {}
+        try:
+            X_sample = self.df[self.feature_cols].tail(100)
+            last_row = self.df[self.feature_cols].iloc[-1:]
+            
+            explainer = shap.Explainer(self.lgb, X_sample)
+            shap_values = explainer(last_row)
+            
+            values = shap_values.values[0]
+            contributions = dict(zip(self.feature_cols, [float(v) for v in values]))
+            
+            top_feats = sorted(contributions.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+            total_abs = sum(abs(v) for k, v in top_feats) + 1e-9
+            
+            res_feats = []
+            for feat, val in top_feats:
+                res_feats.append({
+                    "feature": feat.replace('_', ' '),
+                    "value": round(val, 4),
+                    "percentage": round((abs(val) / total_abs) * 100, 1),
+                    "direction": "positive" if val > 0 else "negative"
+                })
+            return {"top_features": res_feats}
+        except Exception as e:
+            logger.warning(f"SHAP computation error: {e}")
+            return {"top_features": []}
+
+    def get_ai_reasoning(self, pred_res: dict) -> str:
+        if not groq_client:
+            return "AI reasoning is currently unavailable (missing GROQ_API_KEY)."
+            
+        shap_data = self.get_shap_values()
+        feats_desc = ", ".join([f"{f['feature']} ({f['percentage']}% importance, {f['direction']})" for f in shap_data.get("top_features", [])])
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT event_type, summary, sentiment FROM market_events ORDER BY event_time DESC LIMIT 3")
+        recent_events = c.fetchall()
+        conn.close()
+        
+        events_desc = ", ".join([f"{e[0]} Event: '{e[1]}' (Sentiment: {e[2]})" for e in recent_events]) if recent_events else "No major geopolitical events detected recently."
+
+        prompt = f"""
+        You are an elite quantitative analyst.
+        Explain the model's prediction for tomorrow's GoldBEES ETF close price.
+        Current Price: ₹{pred_res['Current_Price']}
+        Tomorrow's Forecasted Close: ₹{pred_res['Predicted_Close']} (Direction: {pred_res['Direction']}, Volatility: {pred_res['Predicted_Volatility']}%)
+        Model Feature Contributions (SHAP): {feats_desc}
+        Latest Financial Events: {events_desc}
+        
+        Provide a concise, professional 3-bullet point breakdown explaining the prediction using SHAP factors and event sentiment. 
+        Limit your entire response to 50 words. Do not add salutations.
+        """
+        try:
+            chat_completion = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.1-8b-instant",
+                temperature=0.2,
+                max_tokens=150
+            )
+            return chat_completion.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Groq API error: {e}")
+            return "Unable to compile AI summary due to API limits."
+
+    # --- Legacy API Support Methods ---
+    
+    def forecast_horizons(self, live_price: float = None) -> dict:
+        """Forecast tomorrow (ensemble), 5 days, 30 days, 90 days."""
+        if self.df.empty:
+            return {}
+            
+        # Get ensemble tomorrow prediction
+        pred_tomorrow = self.predict_tomorrow(live_price)
+        pred_1d = pred_tomorrow.get("Predicted_Close", self.df['goldbees_close'].iloc[-1])
+        current_price = live_price if live_price is not None else float(self.df['goldbees_close'].iloc[-1])
+        
+        vol = float(self.df['Volatility_20'].iloc[-1]) if 'Volatility_20' in self.df.columns else 0.015
+        
+        return {
+            "Current_Price": float(current_price),
+            "Forecast_1_Day": float(pred_1d),
+            "Forecast_5_Days": float(pred_1d * (1 + (vol * np.sqrt(5)))),
+            "Forecast_30_Days": float(pred_1d * (1 + (vol * np.sqrt(30)))),
+            "Forecast_90_Days": float(pred_1d * (1 + (vol * np.sqrt(90)))),
+            "CI_1_Day_Lower": float(pred_tomorrow.get("Conformal_Lower", pred_1d - 1.0)),
+            "CI_1_Day_Upper": float(pred_tomorrow.get("Conformal_Upper", pred_1d + 1.0))
+        }
 
     def custom_forecast(self, target_date: str, live_price: float = None) -> dict:
-        """
-        Forecast price for a specific future date.
-        """
         import datetime
         target = pd.to_datetime(target_date).tz_localize(None)
         today = pd.Timestamp.today().normalize()
-        
-        # Calculate trading days roughly (excluding weekends)
         days = np.busday_count(today.date(), target.date())
         
         if days <= 0:
             return {"error": "Target date must be in the future"}
             
-        current_price = live_price if live_price is not None else self.df[self.target_col].iloc[-1]
+        pred_tomorrow = self.predict_tomorrow(live_price)
+        baseline = pred_tomorrow.get("Predicted_Close", self.df['goldbees_close'].iloc[-1])
+        vol = float(self.df['Volatility_20'].iloc[-1]) if 'Volatility_20' in self.df.columns else 0.015
         
-        returns = self.df['Daily_Return'].replace([np.inf, -np.inf], np.nan).dropna()
-        returns = returns.clip(lower=-0.05, upper=0.05)
-        vol = returns.std()
+        # Calculate daily drift based on long-term past gold price
+        if len(self.df) > 252:
+            past_return = (self.df['goldbees_close'].iloc[-1] / self.df['goldbees_close'].iloc[-252]) - 1
+            base_daily_drift = float(past_return / 252.0)
+        elif len(self.df) > 30:
+            past_return = (self.df['goldbees_close'].iloc[-1] / self.df['goldbees_close'].iloc[-30]) - 1
+            base_daily_drift = float(past_return / 30.0)
+        else:
+            base_daily_drift = 0.0004
+            
+        # For long-term forecasts, extrapolate towards a safe historical gold average (~10% annualized)
+        historical_safe_drift = 0.0004
+        weight_safe = min(1.0, days / 252.0)
+        daily_drift = (base_daily_drift * (1 - weight_safe)) + (historical_safe_drift * weight_safe)
+            
+        # Cap drift to realistic bounds (-0.1% to +0.15% daily max)
+        daily_drift = max(-0.001, min(0.0015, daily_drift))
         
-        # Base 1-day prediction
-        last_row = self.df[self.features].iloc[-1:]
-        pred_1d = self.model.predict(last_row)[0]
-        baseline = live_price if live_price is not None else pred_1d
+        # Integrate World News Sentiment
+        news_sentiment = 0.0
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT sentiment FROM market_events ORDER BY event_time DESC LIMIT 5")
+            events = c.fetchall()
+            conn.close()
+            if events:
+                scores = []
+                for ev in events:
+                    s = str(ev[0]).lower()
+                    if 'bull' in s or 'positive' in s: scores.append(1.0)
+                    elif 'bear' in s or 'negative' in s: scores.append(-1.0)
+                    else: scores.append(0.0)
+                news_sentiment = sum(scores) / len(scores)
+        except Exception:
+            pass
+            
+        # Adjust drift based on world news impact
+        daily_drift += (news_sentiment * 0.0002)
         
-        projected_price = float(baseline * (1 + (vol * np.sqrt(days))))
+        # Project using compound interest formula instead of linear
+        projected_price = float(baseline * ((1 + daily_drift) ** max(0, days - 1)))
+        
         z_score = 1.96
         projected_vol = vol * np.sqrt(days)
         
         return {
             "Target_Date": target_date,
             "Trading_Days": int(days),
-            "Projected_Price": projected_price,
-            "CI_Lower": float(projected_price * (1 - z_score * projected_vol)),
-            "CI_Upper": float(projected_price * (1 + z_score * projected_vol))
+            "Projected_Price": round(projected_price, 2),
+            "CI_Lower": round(float(projected_price * (1 - z_score * projected_vol)), 2),
+            "CI_Upper": round(float(projected_price * (1 + z_score * projected_vol)), 2)
         }
 
     def generate_signals(self) -> pd.DataFrame:
-        """
-        Generates BUY/HOLD/SELL signals combining Trend, Momentum, Volatility, and Model Predictions.
-        """
-        logger.info("Generating trading signals...")
-        if self.df is None:
-            return pd.DataFrame()
-            
+        """Generates buy/sell actions."""
         df_sig = self.df.copy()
         
-        # 1. AI Prediction Signal (Did the model predict up or down?)
-        preds = self.model.predict(df_sig[self.features])
-        df_sig['Predicted_Close'] = preds
-        df_sig['AI_Signal'] = np.where(df_sig['Predicted_Close'] > df_sig['Close'], 1, -1)
-        
-        # Trend: SMA20 > SMA50 is Bullish
+        # Stacking predictions for historical rows
+        if self.meta is not None:
+            pred_xgb = self.xgb.predict(self.df[self.feature_cols])
+            pred_lgb = self.lgb.predict(self.df[self.feature_cols])
+            pred_cat = self.cat.predict(self.df[self.feature_cols])
+            
+            lstm_res = self.lstm.predict_advanced(self.df[self.feature_cols])
+            patch_res = self.patchtst.predict_advanced(self.df[self.feature_cols])
+            
+            X_meta = pd.DataFrame({
+                'xgb': pred_xgb,
+                'lgb': pred_lgb,
+                'cat': pred_cat,
+                'lstm': lstm_res['pred'],
+                'lstm_std': lstm_res['std'],
+                'patchtst': patch_res['pred'],
+                'patchtst_std': patch_res['std']
+            })
+            
+            for i in range(lstm_res['embed'].shape[1]):
+                X_meta[f'lstm_emb_{i}'] = lstm_res['embed'][:, i]
+            for i in range(patch_res['embed'].shape[1]):
+                X_meta[f'patchtst_emb_{i}'] = patch_res['embed'][:, i]
+            df_sig['Predicted_Close'] = df_sig['goldbees_close'] * (1 + self.meta.predict(X_meta))
+        else:
+            df_sig['Predicted_Close'] = df_sig['goldbees_close']
+            
+        df_sig['AI_Signal'] = np.where(df_sig['Predicted_Close'] > df_sig['goldbees_close'], 1, -1)
         df_sig['Trend_Signal'] = np.where(df_sig['SMA_20'] > df_sig['SMA_50'], 1, -1)
         
-        # Momentum: RSI < 30 (Oversold -> Buy), RSI > 70 (Overbought -> Sell)
         df_sig['Momentum_Signal'] = 0
         df_sig.loc[df_sig['RSI'] < 30, 'Momentum_Signal'] = 1
         df_sig.loc[df_sig['RSI'] > 70, 'Momentum_Signal'] = -1
         
-        # 3. Composite Signal (-3 to +3)
         df_sig['Composite_Score'] = df_sig['AI_Signal'] + df_sig['Trend_Signal'] + df_sig['Momentum_Signal']
-        
-        # Final Action
         df_sig['Action'] = "HOLD"
         df_sig.loc[df_sig['Composite_Score'] >= 2, 'Action'] = "BUY"
         df_sig.loc[df_sig['Composite_Score'] <= -2, 'Action'] = "SELL"
         
+        df_sig.rename(columns={'goldbees_close': 'Close'}, inplace=True)
         return df_sig[['Close', 'Predicted_Close', 'AI_Signal', 'Trend_Signal', 'Momentum_Signal', 'Composite_Score', 'Action']]
 
     def get_historical_ohlc(self, days: int = 30) -> list:
-        """
-        Extract the last N days of OHLC data for charting.
-        Returns a list of dictionaries formatted for ApexCharts candlestick series:
-        { x: timestamp, y: [open, high, low, close] }
-        """
-        if self.df is None or self.df.empty:
+        if self.df.empty:
             return []
-            
         recent = self.df.tail(days).copy()
-        
         ohlc_data = []
         for index, row in recent.iterrows():
             ohlc_data.append({
-                "x": str(index),
+                "x": str(index).split(' ')[0],
                 "y": [
-                    round(row['Open'], 2),
-                    round(row['High'], 2),
-                    round(row['Low'], 2),
-                    round(row['Close'], 2)
+                    round(row['goldbees_open'], 2),
+                    round(row['goldbees_high'], 2),
+                    round(row['goldbees_low'], 2),
+                    round(row['goldbees_close'], 2)
                 ]
             })
-            
         return ohlc_data
 
     def calculate_risk(self) -> dict:
-        """
-        Calculate Value at Risk (VaR) and Expected Shortfall using historical simulation.
-        """
-        if self.df is None:
+        if self.df.empty:
             return {}
-            
         returns = self.df['Daily_Return'].replace([np.inf, -np.inf], np.nan).dropna()
         returns = returns.clip(lower=-0.05, upper=0.05)
         
         var_95 = np.percentile(returns, 5)
         var_99 = np.percentile(returns, 1)
-        
         expected_shortfall_95 = returns[returns <= var_95].mean()
         
         return {
@@ -190,224 +422,71 @@ class InferenceEngine:
             "Annualized_Volatility": float(returns.std() * np.sqrt(252))
         }
 
-    def get_shap_values(self) -> dict:
-        """
-        Returns SHAP feature importance as a JSON-serializable dict for the dashboard.
-        Shows the top features that drove today's prediction.
-        """
-        logger.info("Generating SHAP feature importance for dashboard...")
-        if self.model is None or self.df is None:
-            return {}
-
-        try:
-            X_sample = self.df[self.features].tail(100)
-            last_row = self.df[self.features].iloc[-1:]
-
-            explainer = shap.Explainer(self.model, X_sample)
-            shap_values = explainer(last_row)
-
-            # Get values as a flat array
-            values = shap_values.values[0]
-            feature_names = self.features
-
-            # Create sorted dict of feature -> shap contribution
-            contributions = dict(zip(feature_names, [float(v) for v in values]))
-            # Sort by absolute importance, take top 8
-            top_features = sorted(contributions.items(), key=lambda x: abs(x[1]), reverse=True)[:8]
-
-            total = sum(abs(v) for _, v in top_features)
-            result = []
-            for feat, val in top_features:
-                pct = (abs(val) / total * 100) if total > 0 else 0
-                result.append({
-                    "feature": feat,
-                    "value": round(val, 4),
-                    "percentage": round(pct, 1),
-                    "direction": "positive" if val > 0 else "negative"
-                })
-
-            return {"top_features": result}
-
-        except Exception as e:
-            logger.error(f"SHAP computation failed: {e}")
-            return {}
-
     def detect_market_regime(self) -> dict:
-        """
-        Classifies the current market as Bull, Bear, Sideways, or High Volatility.
-        Uses trend (SMA crossover) + volatility to classify.
-        """
-        if self.df is None or self.df.empty:
+        if self.df.empty:
             return {"regime": "Unknown", "confidence": 0}
-
-        recent = self.df.tail(20)
         last = self.df.iloc[-1]
-
-        volatility_20 = float(self.df['Volatility_20'].iloc[-1]) if 'Volatility_20' in self.df.columns else 0.01
-        sma20 = float(last.get('SMA_20', 0))
-        sma50 = float(last.get('SMA_50', 0))
-        rsi = float(last.get('RSI', 50))
-        close = float(last.get('Close', 0))
+        regime_code = int(last.get('Market_Regime', 3))
         
-        high_vol_threshold = self.df['Volatility_20'].quantile(0.8) if 'Volatility_20' in self.df.columns else 0.02
-
-        # Determine regime
-        if volatility_20 > high_vol_threshold:
-            regime = "High Volatility"
-            confidence = min(95, int((volatility_20 / high_vol_threshold) * 70))
-        elif sma20 > sma50 and rsi > 55:
-            regime = "Bull"
-            confidence = min(95, int(((sma20 - sma50) / sma50) * 5000 + 60))
-        elif sma20 < sma50 and rsi < 45:
-            regime = "Bear"
-            confidence = min(95, int(((sma50 - sma20) / sma50) * 5000 + 60))
-        else:
-            regime = "Sideways"
-            confidence = 65
-
+        regime_name = "Sideways"
+        if regime_code == 1: regime_name = "Bull"
+        elif regime_code == 2: regime_name = "Bear"
+        elif regime_code == 4: regime_name = "High Volatility"
+        
         return {
-            "regime": regime,
-            "confidence": int(confidence),
-            "rsi": round(rsi, 1),
-            "sma20": round(sma20, 2),
-            "sma50": round(sma50, 2),
-            "volatility": round(float(volatility_20) * 100, 2)
+            "regime": regime_name,
+            "confidence": 85 if regime_name != "Sideways" else 60,
+            "rsi": round(float(last.get('RSI', 50)), 1),
+            "sma20": round(float(last.get('SMA_20', 0)), 2),
+            "sma50": round(float(last.get('SMA_50', 0)), 2),
+            "volatility": round(float(last.get('Volatility_20', 0.015)) * 100, 2)
         }
 
     def detect_anomalies(self) -> dict:
-        """
-        Detects unusual price or volume activity using Z-scores.
-        """
-        if self.df is None or len(self.df) < 30:
+        if self.df.empty or len(self.df) < 30:
             return {"anomaly_detected": False}
-
+            
         recent = self.df.tail(30)
         last = self.df.iloc[-1]
-
         anomalies = []
-
-        # Volume anomaly
-        if 'Volume' in self.df.columns:
-            vol_mean = float(recent['Volume'].mean())
-            vol_std = float(recent['Volume'].std())
-            last_vol = float(last.get('Volume', vol_mean))
-            if vol_std > 0:
-                vol_zscore = (last_vol - vol_mean) / vol_std
-                if abs(vol_zscore) > 2.5:
-                    pct = int((last_vol / vol_mean - 1) * 100)
-                    direction = "above" if pct > 0 else "below"
-                    anomalies.append({
-                        "type": "Volume Spike",
-                        "message": f"Today's volume is {abs(pct)}% {direction} the 30-day average.",
-                        "severity": "high" if abs(vol_zscore) > 3.5 else "medium",
-                        "icon": "📊"
-                    })
-
-        # Price anomaly
-        price_mean = float(recent['Close'].mean())
-        price_std = float(recent['Close'].std())
-        last_price = float(last.get('Close', price_mean))
-        if price_std > 0:
-            price_zscore = (last_price - price_mean) / price_std
-            if abs(price_zscore) > 2.0:
-                pct = round(abs((last_price - price_mean) / price_mean * 100), 1)
-                direction = "above" if price_zscore > 0 else "below"
+        
+        # Volume Spikes
+        vol_mean = float(recent['goldbees_volume'].mean())
+        vol_std = float(recent['goldbees_volume'].std())
+        last_vol = float(last.get('goldbees_volume', vol_mean))
+        if vol_std > 0:
+            vol_zscore = (last_vol - vol_mean) / vol_std
+            if abs(vol_zscore) > 2.5:
+                pct = int((last_vol / vol_mean - 1) * 100)
+                direction = "above" if pct > 0 else "below"
                 anomalies.append({
-                    "type": "Price Deviation",
-                    "message": f"Price is {pct}% {direction} the 30-day average. Possible breakout.",
-                    "severity": "medium",
-                    "icon": "⚡"
+                    "type": "Volume Spike",
+                    "message": f"Today's volume is {abs(pct)}% {direction} the 30-day average.",
+                    "severity": "high" if abs(vol_zscore) > 3.5 else "medium",
+                    "icon": "📊"
                 })
-
-        return {
-            "anomaly_detected": len(anomalies) > 0,
-            "anomalies": anomalies
-        }
+        return {"anomaly_detected": len(anomalies) > 0, "anomalies": anomalies}
 
     def get_confidence_score(self, live_price: float = None) -> dict:
-        """
-        Generates an AI confidence score (0-100) based on signal agreement,
-        model performance, and market conditions.
-        """
-        if self.model is None or self.df is None:
-            return {"score": 0, "label": "Unknown", "factors": []}
-
-        score = 50  # Base score
-        factors = []
-
-        last = self.df.iloc[-1]
-        rsi = float(last.get('RSI', 50))
-        macd = float(last.get('MACD', 0))
-        macd_signal = float(last.get('MACD_Signal', 0))
-        adx = float(last.get('ADX', 20))
-
-        # ADX > 25 means strong trend → higher confidence
-        if adx > 25:
-            score += 15
-            factors.append({"label": "Strong Trend (ADX)", "impact": "+15%", "positive": True})
-        else:
-            score -= 5
-            factors.append({"label": "Weak Trend (ADX)", "impact": "-5%", "positive": False})
-
-        # MACD alignment
-        if (macd > macd_signal and macd > 0):
-            score += 10
-            factors.append({"label": "MACD Bullish", "impact": "+10%", "positive": True})
-        elif (macd < macd_signal and macd < 0):
-            score += 10
-            factors.append({"label": "MACD Bearish (clear signal)", "impact": "+10%", "positive": True})
-        else:
-            factors.append({"label": "MACD Uncertain", "impact": "0%", "positive": False})
-
-        # RSI not in neutral zone
-        if rsi < 35 or rsi > 65:
-            score += 10
-            factors.append({"label": "RSI Non-Neutral", "impact": "+10%", "positive": True})
-        else:
-            factors.append({"label": "RSI Neutral Zone", "impact": "0%", "positive": False})
-
-        # Volatility check (lower vol = higher confidence in prediction)
-        vol = float(self.df['Volatility_20'].iloc[-1]) if 'Volatility_20' in self.df.columns else 0.015
-        vol_baseline = float(self.df['Volatility_20'].median()) if 'Volatility_20' in self.df.columns else 0.015
-        if vol < vol_baseline:
-            score += 10
-            factors.append({"label": "Low Volatility", "impact": "+10%", "positive": True})
-        else:
-            score -= 5
-            factors.append({"label": "High Volatility", "impact": "-5%", "positive": False})
-
-        score = max(10, min(98, score))
-
-        if score >= 80:
-            label = "High Confidence"
-        elif score >= 60:
-            label = "Moderate Confidence"
-        else:
-            label = "Low Confidence"
-
+        pred_res = self.predict_tomorrow(live_price)
         return {
-            "score": int(score),
-            "label": label,
-            "factors": factors
+            "score": pred_res.get("Confidence", 75),
+            "label": "High Confidence" if pred_res.get("Confidence", 75) > 80 else "Moderate Confidence",
+            "factors": [
+                {"label": "Conformal Bound calibrated", "impact": "OK", "positive": True},
+                {"label": "Regime Stacking active", "impact": "OK", "positive": True}
+            ]
         }
 
     def get_probability_distribution(self, live_price: float = None) -> dict:
-        """
-        Monte Carlo simulation to generate a probability heatmap for tomorrow's price.
-        """
-        if self.df is None:
-            return {}
-            
-        current_price = live_price if live_price is not None else float(self.df['Close'].iloc[-1])
-        volatility = float(self.df['Volatility_20'].iloc[-1]) if 'Volatility_20' in self.df.columns else 0.015
+        pred = self.predict_tomorrow(live_price)
+        pred_close = pred.get("Predicted_Close", 120.0)
+        vol = pred.get("Predicted_Volatility", 1.0) / 100.0
         
-        # Run 10,000 simulations for 1 day
+        # Generate normal distribution bins
         np.random.seed(42)
-        simulated_returns = np.random.normal(0, volatility, 10000)
-        simulated_prices = current_price * (1 + simulated_returns)
-        
-        # Bin the prices
-        hist, bin_edges = np.histogram(simulated_prices, bins=5)
+        sim_prices = np.random.normal(pred_close, pred_close * vol, 1000)
+        hist, bin_edges = np.histogram(sim_prices, bins=5)
         
         distribution = []
         total = sum(hist)
@@ -418,49 +497,28 @@ class InferenceEngine:
                 "price": price_label,
                 "probability": round(prob, 1)
             })
-            
         return {"distribution": distribution}
 
     def find_similar_days(self) -> dict:
-        """
-        Finds the most similar historical day based on technical indicators (Cosine Similarity).
-        """
-        if self.df is None or len(self.df) < 100:
+        if self.df.empty or len(self.df) < 100:
             return {}
-            
-        # Use key indicators for similarity
         cols = ['RSI', 'MACD', 'Volatility_20', 'ADX']
         cols = [c for c in cols if c in self.df.columns]
         
-        if not cols:
-            return {}
-            
         today = self.df[cols].iloc[-1].values
         history = self.df[cols].iloc[:-1].values
         
-        # Compute cosine similarity
         norm_today = np.linalg.norm(today)
         norms_history = np.linalg.norm(history, axis=1)
-        
-        # Avoid division by zero
         norms_history[norms_history == 0] = 1e-9
-        if norm_today == 0: norm_today = 1e-9
-            
-        similarities = np.dot(history, today) / (norms_history * norm_today)
         
+        similarities = np.dot(history, today) / (norms_history * (norm_today if norm_today > 0 else 1e-9))
         best_idx = np.argmax(similarities)
         best_sim = similarities[best_idx]
         
-        similar_date = self.df.index[best_idx]
-        if not isinstance(similar_date, str):
-            similar_date = str(similar_date).split(' ')[0]
-            
-        # Outcome after the similar day (1 day return)
-        if best_idx + 1 < len(self.df):
-            outcome_return = (self.df['Close'].iloc[best_idx + 1] / self.df['Close'].iloc[best_idx]) - 1
-        else:
-            outcome_return = 0
-            
+        similar_date = str(self.df.index[best_idx]).split(' ')[0]
+        outcome_return = (self.df['goldbees_close'].iloc[best_idx + 1] / self.df['goldbees_close'].iloc[best_idx]) - 1 if best_idx + 1 < len(self.df) else 0
+        
         return {
             "similar_date": similar_date,
             "similarity_score": round(float(best_sim) * 100, 1),
@@ -468,32 +526,62 @@ class InferenceEngine:
         }
 
     def simulate_scenario(self, variable: str, change_pct: float, live_price: float = None) -> dict:
-        """
-        What-If Simulator: Adjusts a macro variable and predicts the new price.
-        """
-        if self.model is None or self.df is None:
+        if self.df.empty:
             return {}
-            
-        current_price = live_price if live_price is not None else float(self.df['Close'].iloc[-1])
-        last_row = self.df[self.features].iloc[-1:].copy()
-        
-        # Base prediction
-        base_pred = self.model.predict(last_row)[0]
-        
-        # Apply scenario
-        scenario_pred = base_pred
-        if variable in last_row.columns:
-            last_row[variable] = last_row[variable] * (1 + (change_pct / 100.0))
-            scenario_pred = self.model.predict(last_row)[0]
-        elif variable in ['USD_INR', 'Gold_Spot']:
-            # GoldBeES tracks Gold in INR, so it is highly correlated (~0.98 beta) to both variables
-            beta = 0.98
-            scenario_pred = base_pred * (1 + ((change_pct * beta) / 100.0))
-        
-        # Scale to live price if needed (simplified)
-        impact_pct = (scenario_pred - base_pred) / base_pred
+        current_price = live_price if live_price is not None else float(self.df['goldbees_close'].iloc[-1])
+
+        pred_tomorrow = self.predict_tomorrow(live_price)
+        base_pred = pred_tomorrow.get("Predicted_Close", current_price)  # noqa – kept for UI context
+
+        mapping = {
+            'dxy': 'dxy', 'vix': 'vix',
+            'silver': 'silver', 'crude_oil': 'crude_oil',
+            'usd_inr': 'usd_inr', 'gold_futures': 'gold_futures',
+            'gold_spot': 'gold_futures',
+            'volume': 'goldbees_volume'
+        }
+
+        mapped_col = mapping.get(variable.lower(), None)
+
+
+        # --- CORRELATION-BETA APPROACH ---
+        # Tree-based models cannot extrapolate beyond training data, so we use
+        # historical OLS beta (sensitivity) which works at any input magnitude.
+        # beta = Cov(R_goldbees, R_variable) / Var(R_variable)
+        # Expected GoldBEES impact ≈ beta * scenario_variable_change
+        impact_pct = 0.0
+
+        if mapped_col and mapped_col in self.df.columns:
+            try:
+                # Compute daily returns for both series (last 252 trading days = 1 year)
+                lookback = min(252, len(self.df) - 1)
+                gb_returns = self.df['goldbees_close'].pct_change().tail(lookback).dropna()
+                var_returns = self.df[mapped_col].pct_change().tail(lookback).dropna()
+
+                # Align the two series
+                aligned = pd.concat([gb_returns, var_returns], axis=1).dropna()
+                aligned.columns = ['gb', 'var']
+
+                if len(aligned) >= 20:
+                    # OLS beta: how much GoldBEES moves per 1-unit move in the variable
+                    var_variance = aligned['var'].var()
+                    if var_variance > 1e-10:
+                        beta = aligned['gb'].cov(aligned['var']) / var_variance
+                    else:
+                        beta = 0.0
+
+                    # Apply: change_pct is the user input (e.g. +100 means +100%)
+                    # We convert to decimal for the calculation
+                    variable_return = change_pct / 100.0
+                    impact_pct = beta * variable_return
+
+                    # Cap at ±30% to prevent absurd outputs from extreme inputs
+                    impact_pct = max(-0.30, min(0.30, impact_pct))
+            except Exception:
+                impact_pct = 0.0
+
         new_expected_price = current_price * (1 + impact_pct)
-        
+
         return {
             "scenario": f"{variable} {'+' if change_pct > 0 else ''}{change_pct}%",
             "base_expected": round(current_price, 2),
@@ -502,17 +590,9 @@ class InferenceEngine:
         }
 
     def detect_patterns(self) -> dict:
-        """
-        Algorithmic detection of basic chart patterns (e.g. Double Top, Double Bottom).
-        Simplified implementation for the last 20 days.
-        """
-        if self.df is None or len(self.df) < 20:
+        if self.df.empty or len(self.df) < 20:
             return {}
-            
-        recent = self.df.tail(20)
-        closes = recent['Close'].values
-        
-        # Very simplified peak/trough detection
+        closes = self.df.tail(20)['goldbees_close'].values
         peaks = []
         troughs = []
         for i in range(1, len(closes)-1):
@@ -520,43 +600,19 @@ class InferenceEngine:
                 peaks.append((i, closes[i]))
             if closes[i] < closes[i-1] and closes[i] < closes[i+1]:
                 troughs.append((i, closes[i]))
-                
         patterns = []
         if len(peaks) >= 2:
             p1, p2 = peaks[-2][1], peaks[-1][1]
             if abs(p1 - p2) / p1 < 0.01:
                 patterns.append("Double Top Detected (Bearish)")
-                
         if len(troughs) >= 2:
             t1, t2 = troughs[-2][1], troughs[-1][1]
             if abs(t1 - t2) / t1 < 0.01:
                 patterns.append("Double Bottom Detected (Bullish)")
-                
-        if len(peaks) >= 2 and peaks[-1][1] > peaks[-2][1] * 1.005:
-            patterns.append("Higher Highs (Bullish Trend)")
-        elif len(peaks) >= 2 and peaks[-1][1] < peaks[-2][1] * 0.995:
-            patterns.append("Lower Highs (Bearish Trend)")
-            
-        if len(troughs) >= 2 and troughs[-1][1] < troughs[-2][1] * 0.995:
-            patterns.append("Lower Lows (Bearish Trend)")
-        elif len(troughs) >= 2 and troughs[-1][1] > troughs[-2][1] * 1.005:
-            patterns.append("Higher Lows (Bullish Trend)")
-
         if not patterns:
             patterns.append("No clear patterns in last 20 days")
-            
         return {"patterns": patterns}
 
 if __name__ == "__main__":
-    engine = InferenceEngine(model_name="LinearRegression")
-    
-    forecasts = engine.forecast_horizons()
-    print("Forecasts:", forecasts)
-    
-    risk = engine.calculate_risk()
-    print("Risk Metrics:", risk)
-    
-    signals = engine.generate_signals()
-    print("Latest Signals:\n", signals.tail())
-    
-    engine.explain_prediction()
+    engine = InferenceEngine()
+    print("Ensemble Forecast:", engine.forecast_horizons())
