@@ -1109,6 +1109,7 @@ import random
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    logger.info("Live WebSocket client connected.")
     try:
         engine = get_engine()
         live_price = get_live_price()
@@ -1118,34 +1119,43 @@ async def websocket_endpoint(websocket: WebSocket):
         current_price = live_price
         
         while True:
-            # 1. Fetch real price from Google Finance quote scraper
-            new_price = get_live_price("GOLDBEES.NS")
-            if new_price is not None:
-                current_price = new_price
-            
-            # 2. Recalculate forecasts based on the current price
-            forecast = engine.forecast_horizons(live_price=current_price)
-            forecast["Current_Price"] = current_price
-            
-            # 3. Fetch live macro-economic rates
-            macro_rates = fetch_live_macro_rates()
-            
-            payload = {
-                "status": "success",
-                "current_price": current_price,
-                "forecast": forecast,
-                "macro": {
-                    "USD_INR": macro_rates["USD_INR"],
-                    "Gold_Futures_USD": macro_rates["Gold_Futures_USD"]
+            try:
+                # 1. Fetch real price from Google Finance quote scraper
+                new_price = get_live_price("GOLDBEES.NS")
+                if new_price is not None:
+                    current_price = new_price
+                
+                # 2. Recalculate forecasts based on the current price
+                forecast = engine.forecast_horizons(live_price=current_price)
+                forecast["Current_Price"] = current_price
+                
+                # 3. Fetch live macro-economic rates
+                macro_rates = fetch_live_macro_rates()
+                
+                payload = {
+                    "status": "success",
+                    "current_price": current_price,
+                    "forecast": forecast,
+                    "macro": {
+                        "USD_INR": macro_rates["USD_INR"],
+                        "Gold_Futures_USD": macro_rates["Gold_Futures_USD"]
+                    }
                 }
-            }
-            await websocket.send_json(payload)
-            # Sleep 10 seconds (as requested by user to prevent Google Finance IP block)
+                await websocket.send_json(payload)
+            except (WebSocketDisconnect, RuntimeError):
+                # Client disconnected mid-loop, exit cleanly
+                break
+            except Exception as e:
+                logger.warning(f"WebSocket loop error (non-fatal): {e}")
+                # Don't crash the loop for transient errors (e.g. Google Finance timeout)
+            # Sleep 10 seconds between updates
             await asyncio.sleep(10.0)
     except WebSocketDisconnect:
         logger.info("Live WebSocket client disconnected.")
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket setup error: {e}")
+    finally:
+        logger.info("Live WebSocket connection closed.")
 
 # Trigger reload for websockets package installation
 

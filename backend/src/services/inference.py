@@ -77,7 +77,8 @@ class InferenceEngine:
             lstm_res = self.lstm.predict_advanced(last_60_rows)
             patch_res = self.patchtst.predict_advanced(last_60_rows)
             
-            X_meta = pd.DataFrame({
+            # Build all columns at once to avoid DataFrame fragmentation
+            meta_cols = {
                 'xgb': [pred_xgb],
                 'lgb': [pred_lgb],
                 'cat': [pred_cat],
@@ -85,12 +86,12 @@ class InferenceEngine:
                 'lstm_std': [lstm_res['std'][-1]],
                 'patchtst': [patch_res['pred'][-1]],
                 'patchtst_std': [patch_res['std'][-1]]
-            })
-            
+            }
             for i in range(lstm_res['embed'].shape[1]):
-                X_meta[f'lstm_emb_{i}'] = [lstm_res['embed'][-1, i]]
+                meta_cols[f'lstm_emb_{i}'] = [lstm_res['embed'][-1, i]]
             for i in range(patch_res['embed'].shape[1]):
-                X_meta[f'patchtst_emb_{i}'] = [patch_res['embed'][-1, i]]
+                meta_cols[f'patchtst_emb_{i}'] = [patch_res['embed'][-1, i]]
+            X_meta = pd.DataFrame(meta_cols)
             
         # Stacking Predictor returns percentage return now
         pred_return = float(self.meta.predict(X_meta)[0])
