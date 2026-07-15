@@ -134,6 +134,10 @@ def init_db():
 
 init_db()
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "message": "Service is healthy and awake"}
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -208,7 +212,7 @@ def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://192.168.1.3:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://192.168.1.3:3000", "http://127.0.0.1:3000", "https://stock-rho-gilt.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
