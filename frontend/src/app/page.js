@@ -46,6 +46,7 @@ export default function Dashboard() {
   // Existing States
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [wakingUp, setWakingUp] = useState(false);
   const [tomorrowPrediction, setTomorrowPrediction] = useState(null);
 
   // Custom Forecast States
@@ -149,6 +150,10 @@ export default function Dashboard() {
   const chartRef = useRef(null);
 
   const fetchDashboardData = async () => {
+    let timeoutId = setTimeout(() => {
+      setWakingUp(true);
+    }, 3000);
+
     try {
       const res = await fetch(`${API_BASE_URL}/dashboard`);
       const json = await res.json();
@@ -158,7 +163,9 @@ export default function Dashboard() {
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
+      setWakingUp(false);
     }
   };
 
@@ -657,8 +664,13 @@ export default function Dashboard() {
 
   if (loading && !data) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#E8EFE9] text-gray-900">
+      <div className="flex flex-col h-screen items-center justify-center bg-[#E8EFE9] text-gray-900 space-y-4">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#5A67D8]"></div>
+        {wakingUp && (
+          <p className="text-sm text-gray-600 font-medium animate-pulse">
+            Waking up AI Engine (this may take up to a minute)...
+          </p>
+        )}
       </div>
     );
   }
@@ -686,11 +698,20 @@ export default function Dashboard() {
   const getFilteredOhlc = () => {
     if (!ohlc || ohlc.length === 0) return [];
 
-    // Parse date strings to timestamps for sorting/filtering
-    const sorted = [...ohlc].map(item => ({
-      ...item,
-      timestamp: new Date(item.x).getTime()
-    })).sort((a, b) => a.timestamp - b.timestamp);
+    // Parse date strings to local midnight timestamps for correct alignment
+    const sorted = [...ohlc].map(item => {
+      const parts = item.x.split('-');
+      let ts = 0;
+      if (parts.length === 3) {
+        ts = new Date(parts[0], parts[1] - 1, parts[2]).getTime();
+      } else {
+        ts = new Date(item.x).getTime();
+      }
+      return {
+        ...item,
+        timestamp: ts
+      };
+    }).sort((a, b) => a.timestamp - b.timestamp);
 
     const latestDate = sorted[sorted.length - 1].timestamp;
 
@@ -729,11 +750,18 @@ export default function Dashboard() {
       gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05, stops: [0, 100] }
     },
     stroke: { curve: 'smooth', width: 2 },
-    xaxis: { type: 'datetime', labels: { style: { colors: '#6B7280' } }, axisBorder: { show: false }, axisTicks: { show: false } },
+    xaxis: { 
+      type: 'datetime', 
+      labels: { style: { colors: '#6B7280' } }, 
+      axisBorder: { show: true, color: '#E5E7EB' }, 
+      axisTicks: { show: true, color: '#E5E7EB' } 
+    },
     yaxis: {
+      opposite: true,
+      decimalsInFloat: 2,
       labels: { formatter: (value) => '₹' + value.toFixed(2), style: { colors: '#6B7280' } }
     },
-    grid: { borderColor: '#E5E7EB', strokeDashArray: 4 },
+    grid: { borderColor: '#E5E7EB', strokeDashArray: 4, padding: { left: 10, right: 10 } },
     dataLabels: { enabled: false },
     tooltip: { theme: 'light', x: { format: 'dd MMM yyyy' } }
   };

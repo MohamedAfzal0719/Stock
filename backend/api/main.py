@@ -157,10 +157,54 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     return {"user_id": row[0], "username": row[1]}
 
 from fastapi.middleware.cors import CORSMiddleware
+import threading
+import time
+from src.features.engineer import FeatureStoreManager
+
+def automated_data_pipeline_worker():
+    while True:
+        try:
+            # Check if we need to update
+            current_date = datetime.now().date()
+            current_hour = datetime.now().hour
+            
+            # Fetch latest date from DB or features
+            df = FeatureStoreManager.load_features()
+            latest_date = df.index[-1].date() if not df.empty else None
+            
+            # If we don't have today's data, and it's after market close (e.g. 6 PM)
+            # OR if we are far behind, trigger an update
+            if latest_date is None or (latest_date < current_date and current_hour >= 18):
+                logger.info(f"Automated pipeline triggered. Latest data date: {latest_date}, Current date: {current_date}")
+                
+                downloader = DataDownloader()
+                downloader.download_daily_data()
+                downloader.download_intraday_data()
+                
+                engineer = FeatureEngineer()
+                engineer.generate_all_features()
+                
+                # Clear engine cache so the next request reloads data
+                with _engine_lock:
+                    _inference_engines.clear()
+                    
+                logger.info("Automated pipeline complete. Cache cleared.")
+                
+        except Exception as e:
+            logger.error(f"Error in automated data pipeline: {e}")
+        
+        # Sleep for 1 hour before checking again
+        time.sleep(3600)
 
 app = FastAPI(
     title="GoldBeES AI Trading Engine"
 )
+
+@app.on_event("startup")
+def startup_event():
+    # Start the automated pipeline in a daemon thread so it doesn't block shutdown
+    t = threading.Thread(target=automated_data_pipeline_worker, daemon=True)
+    t.start()
 
 app.add_middleware(
     CORSMiddleware,

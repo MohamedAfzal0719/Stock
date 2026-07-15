@@ -13,22 +13,29 @@ logger = get_logger(__name__)
 # Try to load local FinBERT, with VaderSentiment as fallback
 FINBERT_MODEL = "yiyanghkust/finbert-tone"
 nlp_pipeline = None
+vader_analyzer = None
+_models_loaded = False
 
-try:
-    from transformers import pipeline
-    logger.info(f"Loading local FinBERT model '{FINBERT_MODEL}'...")
-    # Initialize pipeline
-    nlp_pipeline = pipeline("sentiment-analysis", model=FINBERT_MODEL, tokenizer=FINBERT_MODEL, device=-1) # -1 runs on CPU
-    logger.info("FinBERT model loaded successfully.")
-except Exception as e:
-    logger.warning(f"Failed to load FinBERT model locally: {e}. Falling back to VaderSentiment/Rule-based analyzer.")
+def _load_models():
+    global nlp_pipeline, vader_analyzer, _models_loaded
+    if _models_loaded:
+        return
     try:
-        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-        vader_analyzer = SentimentIntensityAnalyzer()
-        logger.info("VaderSentiment initialized as fallback.")
-    except Exception as ve:
-        logger.error(f"VaderSentiment import failed: {ve}. Will use basic dictionary analyzer.")
-        vader_analyzer = None
+        from transformers import pipeline
+        logger.info(f"Loading local FinBERT model '{FINBERT_MODEL}'...")
+        # Initialize pipeline
+        nlp_pipeline = pipeline("sentiment-analysis", model=FINBERT_MODEL, tokenizer=FINBERT_MODEL, device=-1) # -1 runs on CPU
+        logger.info("FinBERT model loaded successfully.")
+    except Exception as e:
+        logger.warning(f"Failed to load FinBERT model locally: {e}. Falling back to VaderSentiment/Rule-based analyzer.")
+        try:
+            from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+            vader_analyzer = SentimentIntensityAnalyzer()
+            logger.info("VaderSentiment initialized as fallback.")
+        except Exception as ve:
+            logger.error(f"VaderSentiment import failed: {ve}. Will use basic dictionary analyzer.")
+            vader_analyzer = None
+    _models_loaded = True
 
 class NewsEventStore:
     """
@@ -78,6 +85,7 @@ class NewsEventStore:
         """
         Determines deterministic sentiment score (-1 to +1) and confidence score (0 to 1).
         """
+        _load_models()
         if nlp_pipeline is not None:
             try:
                 res = nlp_pipeline(text)[0]
