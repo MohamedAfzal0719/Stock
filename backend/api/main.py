@@ -162,6 +162,9 @@ import time
 from src.features.engineer import FeatureStoreManager
 
 def automated_data_pipeline_worker():
+    # Sleep for 2 minutes on startup to allow Render's port scanner and Uvicorn to initialize
+    # before we lock up the CPU (GIL) with heavy Pandas operations.
+    time.sleep(120)
     while True:
         try:
             # Check if we need to update
