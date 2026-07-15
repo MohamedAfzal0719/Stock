@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 import pandas as pd
 import numpy as np
-from src.utils.db import get_db_connection
+from src.utils.db import get_db_connection, get_engine
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,13 +53,12 @@ class EconomicCalendarService:
         """
         Gets aggregated surprise index scores for the last 5 days.
         """
-        conn = get_db_connection()
+        engine = get_engine()
         df = pd.read_sql_query("""
             SELECT event_name, surprise, event_date
             FROM economic_events
             WHERE event_date <= %s AND event_date >= %s::timestamp - interval '5 days'
-        """, conn, params=(target_date, target_date))
-        conn.close()
+        """, engine, params=(target_date, target_date))
         
         features = {
             "Fed_Surprise_Score": 0.0,

@@ -11,10 +11,22 @@ logger = get_logger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+from sqlalchemy import create_engine
+
 def get_db_connection():
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL environment variable is not set!")
     return psycopg2.connect(DATABASE_URL)
+
+def get_engine():
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL environment variable is not set!")
+    # SQLAlchemy requires postgresql:// instead of postgres:// in newer versions, 
+    # but let's just pass it as is or fix it if needed.
+    url = DATABASE_URL
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return create_engine(url)
 
 def init_db():
     """Initializes the database schema for the GoldBEES system."""

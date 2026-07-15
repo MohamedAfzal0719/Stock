@@ -4,7 +4,7 @@ import ta
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from src.utils.db import get_db_connection
+from src.utils.db import get_db_connection, get_engine
 from src.services.news_nlp import NewsEventStore
 from src.services.economic_calendar import EconomicCalendarService
 from src.utils.logger import get_logger
@@ -63,13 +63,12 @@ class FeatureStoreManager:
     @staticmethod
     def load_features(version: str = "v1") -> pd.DataFrame:
         """Loads features from the Feature Store database table."""
-        conn = get_db_connection()
+        engine = get_engine()
         df = pd.read_sql_query("""
             SELECT date, features FROM feature_store
             WHERE feature_version = %s
             ORDER BY date ASC
-        """, conn, params=(version,))
-        conn.close()
+        """, engine, params=(version,))
         
         if df.empty:
             return pd.DataFrame()
@@ -94,30 +93,26 @@ class FeatureEngineer:
         pass
 
     def load_market_data(self) -> pd.DataFrame:
-        conn = get_db_connection()
+        engine = get_engine()
         df = pd.read_sql_query("""
-            SELECT * FROM market_prices
+            SELECT * FROM market_prices 
             ORDER BY date ASC
-        """, conn)
-        conn.close()
+        """, engine, index_col='date')
         
         if df.empty:
             raise ValueError("No market data found in database. Run downloader first.")
             
-        df['date'] = pd.to_datetime(df['date'])
-        df.set_index('date', inplace=True)
         df.sort_index(inplace=True)
         return df
 
     def get_intraday_features(self) -> pd.DataFrame:
         """Computes daily summaries from intraday candles."""
-        conn = get_db_connection()
+        engine = get_engine()
         df_intra = pd.read_sql_query("""
             SELECT timestamp::date as date, goldbees_price, goldbees_volume
             FROM market_prices_intraday
             ORDER BY timestamp ASC
-        """, conn)
-        conn.close()
+        """, engine)
         
         if df_intra.empty:
             return pd.DataFrame()
@@ -253,10 +248,9 @@ class FeatureEngineer:
         EconomicCalendarService.populate_seed_calendar()
         
         # Load all events into memory to avoid nested database queries in the loop
-        conn = get_db_connection()
-        df_events = pd.read_sql_query("SELECT event_time, event_type, sentiment, importance FROM market_events", conn)
-        df_macro = pd.read_sql_query("SELECT event_date, event_name, surprise FROM economic_events", conn)
-        conn.close()
+        engine = get_engine()
+        df_events = pd.read_sql_query("SELECT event_time, event_type, sentiment, importance FROM market_events", engine)
+        df_macro = pd.read_sql_query("SELECT event_date, event_name, surprise FROM economic_events", engine)
         
         if not df_events.empty:
             df_events['event_time'] = pd.to_datetime(df_events['event_time'])

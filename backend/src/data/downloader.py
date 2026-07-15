@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from src.utils.db import get_db_connection
+from src.utils.db import get_db_connection, get_engine
 from src.utils.validation import DataValidator
 from src.utils.logger import get_logger
 
@@ -203,13 +203,12 @@ class DataDownloader:
         except Exception as e:
             logger.warning(f"Intraday yfinance download failed: {e}. Generating simulated intraday from daily close...")
             # Generate simulated intraday (1-hour candles) for 60 business days based on daily close
-            conn = get_db_connection()
+            engine = get_engine()
             df_daily = pd.read_sql_query("""
                 SELECT date, goldbees_close, goldbees_volume, gold_futures
                 FROM market_prices
                 ORDER BY date DESC LIMIT 60
-            """, conn)
-            conn.close()
+            """, engine)
             
             if not df_daily.empty:
                 rows = []

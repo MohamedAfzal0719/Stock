@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-from src.utils.db import get_db_connection
+from src.utils.db import get_db_connection, get_engine
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -227,13 +227,12 @@ class NewsEventStore:
         Aggregates daily news sentiments applying exponential decay:
         S_decayed = sum( S(t - d) * exp(-lambda * d) )
         """
-        conn = get_db_connection()
+        engine = get_engine()
         df = pd.read_sql_query("""
             SELECT event_time::date as date, event_type, sentiment, importance
             FROM market_events
             WHERE event_time <= %s AND event_time >= %s
-        """, conn, params=(target_date, target_date - timedelta(days=lookback_days)))
-        conn.close()
+        """, engine, params=(target_date, target_date - timedelta(days=lookback_days)))
         
         features = {
             "News_Sentiment_Decayed": 0.0,
