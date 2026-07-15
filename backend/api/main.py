@@ -134,10 +134,6 @@ def init_db():
 
 init_db()
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "message": "Service is healthy and awake"}
-
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -231,7 +227,8 @@ class TrainRequest(BaseModel):
 # --- API Endpoints ---
 
 @app.get("/", response_model=ResponseModel)
-def health_check():
+@app.get("/health", response_model=ResponseModel)
+def root_health_check():
     return {"status": "success", "message": "GoldBeES AI Engine is running perfectly.", "data": {}}
 
 @app.post("/download-data", response_model=ResponseModel)
