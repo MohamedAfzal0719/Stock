@@ -938,8 +938,8 @@ export default function Dashboard() {
 
                   {/* LEFT: CHART AREA */}
                   <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } } }} className="lg:col-span-2 space-y-6">
-                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start mb-6 space-y-4 sm:space-y-0">
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 flex flex-col h-full">
+                      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start mb-6 space-y-4 sm:space-y-0 shrink-0">
                         <div>
                           <div className="flex items-center mb-2">
                             <div className="w-6 h-6 bg-yellow-100 rounded-md flex items-center justify-center mr-2"><span className="text-yellow-600 font-bold text-xs">G</span></div>
@@ -964,7 +964,7 @@ export default function Dashboard() {
                         </div>
                       </div>
 
-                      <div className="h-80 w-full relative -mx-2">
+                      <div className="flex-1 min-h-[320px] w-full relative -mx-2">
                         {ohlc && ohlc.length > 0 ? (
                           <ReactApexChart options={lineOptions} series={lineSeriesData} type="area" height="100%" />
                         ) : (
@@ -973,18 +973,7 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* AI Smart Advice Row */}
-                    <div className="bg-[#EEF2FF] border border-indigo-100 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between">
-                      <div className="flex items-center mb-4 md:mb-0">
-                        <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm mr-4">
-                          <Zap className="w-6 h-6 text-[#5A67D8]" />
-                        </div>
-                        <div>
-                          <h4 className="text-sm font-bold text-gray-900">AI Portfolio Advisor</h4>
-                          <p className="text-sm text-indigo-700 font-medium">{smartAdvice}</p>
-                        </div>
-                      </div>
-                    </div>
+
                   </motion.div>
 
                   {/* RIGHT: WIDGETS */}
@@ -1077,10 +1066,9 @@ export default function Dashboard() {
                   </motion.div>
                 </div>
 
-                {/* Personal Tracker Form Container (Bottom) */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mt-8">
-                  {/* Left: Manage Portfolio */}
-                  <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } } }} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 lg:col-span-2">
+                {/* Manage Portfolio Row */}
+                <div className="mt-8">
+                  <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } } }} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 flex flex-col">
                     <h2 className="text-xl font-bold mb-6 text-gray-900">Manage Portfolio</h2>
                     <form onSubmit={handleSavePortfolio} className="flex flex-col sm:flex-row items-end space-y-4 sm:space-y-0 sm:space-x-6">
                       <div className="flex-1 w-full">
@@ -1110,78 +1098,102 @@ export default function Dashboard() {
                         Save Portfolio
                       </button>
                     </form>
-                  </motion.div>
-
-                  {/* Right: Tomorrow's Forecast */}
-                  {tomorrowPrediction && (
-                    <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut", delay: 0.1 } } }} className="bg-[#fcfdfc] rounded-2xl border-2 border-yellow-100 shadow-sm p-6 relative overflow-hidden flex flex-col justify-between">
-                      <div>
-                        <div className="flex justify-between items-center mb-4">
-                          <h3 className="font-bold text-gray-900 text-sm">Tomorrow's Forecast</h3>
-                          <span className={`text-xs font-bold px-2 py-1 rounded-md ${tomorrowPrediction.Direction === 'BULLISH' ? 'bg-emerald-50 text-emerald-600' : tomorrowPrediction.Direction === 'BEARISH' ? 'bg-rose-50 text-rose-600' : 'bg-yellow-50 text-yellow-600'}`}>
-                            {tomorrowPrediction.Direction}
-                          </span>
-                        </div>
-                        <div className="flex items-end space-x-3 mb-6">
-                          <h2 className="text-3xl font-bold text-gray-900 font-mono">₹{tomorrowPrediction.Predicted_Close.toFixed(2)}</h2>
-                          <span className="text-gray-400 font-mono text-xs mb-1">[{tomorrowPrediction.Conformal_Lower.toFixed(2)} - {tomorrowPrediction.Conformal_Upper.toFixed(2)}]</span>
-                        </div>
-                        
-                        <div className="grid grid-cols-2 gap-4 mb-6">
-                          <div>
-                            <p className="text-xs font-semibold text-gray-400 mb-1">Expected Return</p>
-                            <p className={`text-sm font-bold ${tomorrowPrediction.Expected_Return_Pct >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{tomorrowPrediction.Expected_Return_Pct > 0 ? '+' : ''}{tomorrowPrediction.Expected_Return_Pct}%</p>
-                          </div>
-                          <div>
-                            <p className="text-xs font-semibold text-gray-400 mb-1">Forecasted Vol</p>
-                            <p className="text-sm font-bold text-gray-900">{tomorrowPrediction.Predicted_Volatility}%</p>
-                          </div>
-                          <div>
-                            <p className="text-xs font-semibold text-gray-400 mb-1">Prob Breakout 1%</p>
-                            <p className="text-sm font-bold text-gray-900">{tomorrowPrediction.Prob_Move_1pct}%</p>
-                          </div>
-                          <div>
-                            <p className="text-xs font-semibold text-gray-400 mb-1">Prob Breakout 2%</p>
-                            <p className="text-sm font-bold text-gray-900">{tomorrowPrediction.Prob_Move_2pct}%</p>
-                          </div>
-                        </div>
+                    
+                    {/* AI Smart Advice Row */}
+                    <div className="mt-8 bg-[#EEF2FF] border border-indigo-100 rounded-2xl p-6 flex items-center">
+                      <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm mr-4 shrink-0">
+                        <Zap className="w-6 h-6 text-[#5A67D8]" />
                       </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-gray-900">AI Portfolio Advisor</h4>
+                        <p className="text-sm text-indigo-700 font-medium">{smartAdvice}</p>
+                      </div>
+                    </div>
+                  </motion.div>
+                </div>
 
-                      <div className="pt-4 border-t border-gray-100">
-                        <h4 className="text-xs font-bold text-gray-900 mb-2">AI Explainer (SHAP)</h4>
-                        <p className="text-xs text-gray-500 leading-relaxed italic mb-4">
-                          {tomorrowPrediction.Reasoning}
-                        </p>
+                {/* Tomorrow's Forecast Row */}
+                {tomorrowPrediction && (
+                  <div className="mt-8">
+                    <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut", delay: 0.1 } } }} className="bg-[#fcfdfc] rounded-2xl border-2 border-yellow-100 shadow-sm p-6 relative overflow-hidden">
+                      <div className="flex justify-between items-center mb-6">
+                        <h3 className="font-bold text-gray-900 text-lg">Tomorrow's Forecast</h3>
+                        <span className={`text-xs font-bold px-3 py-1.5 rounded-lg ${tomorrowPrediction.Direction === 'BULLISH' ? 'bg-emerald-50 text-emerald-600' : tomorrowPrediction.Direction === 'BEARISH' ? 'bg-rose-50 text-rose-600' : 'bg-yellow-50 text-yellow-600'}`}>
+                          {tomorrowPrediction.Direction}
+                        </span>
                       </div>
                       
-                      {tomorrowPrediction.Consensus && tomorrowPrediction.Deep_Confidence && (
-                        <div className="pt-4 border-t border-gray-100">
-                          <h4 className="text-xs font-bold text-gray-900 mb-3 flex items-center"><Target className="w-4 h-4 mr-2 text-indigo-500" /> Deep Stacking Consensus</h4>
-                          <div className="space-y-3">
-                            {Object.entries(tomorrowPrediction.Consensus).map(([model, pred]) => (
-                              <div key={model} className="flex justify-between items-center bg-gray-50 px-3 py-2 rounded-lg">
-                                <span className="text-xs font-semibold text-gray-600">{model}</span>
-                                <span className="text-sm font-bold text-gray-900 font-mono">₹{pred.toFixed(2)}</span>
-                              </div>
-                            ))}
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        
+                        {/* Col 1: Core Stats */}
+                        <div>
+                          <div className="flex items-end space-x-3 mb-6">
+                            <h2 className="text-4xl font-bold text-gray-900 font-mono">₹{tomorrowPrediction.Predicted_Close.toFixed(2)}</h2>
+                            <span className="text-gray-400 font-mono text-sm mb-1">[{tomorrowPrediction.Conformal_Lower.toFixed(2)} - {tomorrowPrediction.Conformal_Upper.toFixed(2)}]</span>
                           </div>
                           
-                          <div className="mt-4 bg-indigo-50 p-4 rounded-xl border border-indigo-100">
-                            <h4 className="text-xs font-bold text-indigo-900 mb-2 flex items-center"><Activity className="w-4 h-4 mr-2 text-indigo-500" /> Deep Confidence (MC Dropout)</h4>
-                            <div className="flex justify-between items-center">
-                              <span className="text-xs text-indigo-700">LSTM Volatility</span>
-                              <span className="text-xs font-bold text-indigo-900">{(tomorrowPrediction.Deep_Confidence.LSTM_Uncertainty * 100).toFixed(4)}%</span>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <p className="text-xs font-semibold text-gray-400 mb-1">Expected Return</p>
+                              <p className={`text-sm font-bold ${tomorrowPrediction.Expected_Return_Pct >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{tomorrowPrediction.Expected_Return_Pct > 0 ? '+' : ''}{tomorrowPrediction.Expected_Return_Pct}%</p>
                             </div>
-                            <div className="flex justify-between items-center mt-1">
-                              <span className="text-xs text-indigo-700">Transformer Volatility</span>
-                              <span className="text-xs font-bold text-indigo-900">{(tomorrowPrediction.Deep_Confidence.PatchTST_Uncertainty * 100).toFixed(4)}%</span>
+                            <div>
+                              <p className="text-xs font-semibold text-gray-400 mb-1">Forecasted Vol</p>
+                              <p className="text-sm font-bold text-gray-900">{tomorrowPrediction.Predicted_Volatility}%</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-semibold text-gray-400 mb-1">Prob Breakout 1%</p>
+                              <p className="text-sm font-bold text-gray-900">{tomorrowPrediction.Prob_Move_1pct}%</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-semibold text-gray-400 mb-1">Prob Breakout 2%</p>
+                              <p className="text-sm font-bold text-gray-900">{tomorrowPrediction.Prob_Move_2pct}%</p>
                             </div>
                           </div>
                         </div>
-                      )}
+
+                        {/* Col 2: Deep Stacking Consensus */}
+                        {tomorrowPrediction.Consensus && (
+                          <div className="border-t lg:border-t-0 lg:border-l border-gray-100 pt-6 lg:pt-0 lg:pl-8">
+                            <h4 className="text-sm font-bold text-gray-900 mb-4 flex items-center"><Target className="w-4 h-4 mr-2 text-indigo-500" /> Deep Stacking Consensus</h4>
+                            <div className="space-y-3">
+                              {Object.entries(tomorrowPrediction.Consensus).map(([model, pred]) => (
+                                <div key={model} className="flex justify-between items-center bg-gray-50 px-4 py-2.5 rounded-xl border border-gray-100">
+                                  <span className="text-xs font-bold text-gray-600">{model}</span>
+                                  <span className="text-sm font-bold text-gray-900 font-mono">₹{pred.toFixed(2)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Col 3: AI Explainer & Confidence */}
+                        <div className="border-t lg:border-t-0 lg:border-l border-gray-100 pt-6 lg:pt-0 lg:pl-8 flex flex-col justify-between">
+                          <div>
+                            <h4 className="text-sm font-bold text-gray-900 mb-3">AI Explainer (SHAP)</h4>
+                            <p className="text-xs text-gray-500 leading-relaxed italic mb-6">
+                              {tomorrowPrediction.Reasoning}
+                            </p>
+                          </div>
+                          
+                          {tomorrowPrediction.Deep_Confidence && (
+                            <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+                              <h4 className="text-xs font-bold text-indigo-900 mb-3 flex items-center"><Activity className="w-4 h-4 mr-2 text-indigo-500" /> Deep Confidence</h4>
+                              <div className="flex justify-between items-center mb-2">
+                                <span className="text-xs text-indigo-700 font-semibold">LSTM Volatility</span>
+                                <span className="text-xs font-bold text-indigo-900">{(tomorrowPrediction.Deep_Confidence.LSTM_Uncertainty * 100).toFixed(4)}%</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-xs text-indigo-700 font-semibold">Transformer Volatility</span>
+                                <span className="text-xs font-bold text-indigo-900">{(tomorrowPrediction.Deep_Confidence.PatchTST_Uncertainty * 100).toFixed(4)}%</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </motion.div>
-                  )}
-                </div>
+                  </div>
+                )}
 
               </motion.div>
             )}
